@@ -1,4 +1,4 @@
-export const PBKDF2_ITERATIONS = 600000;
+export const PBKDF2_ITERATIONS = 100000;
 
 function bufferToHex(buffer: ArrayBuffer): string {
   return Array.from(new Uint8Array(buffer))

@@ -3,10 +3,16 @@ main = "src/index.ts"
 compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
 
+# Custom domain — serves the Worker at https://prebase.sji.one
+routes = [
+  { pattern = "prebase.sji.one", custom_domain = true }
+]
+
+
 [[d1_databases]]
 binding = "DB"
-database_name = "prebase-dev"
-database_id = "local-dev-placeholder"
+database_name = "prebase-prod"
+database_id = "1bbf41ca-97b2-4200-8170-557777bc97c8"
 
 [ai]
 binding = "AI"
@@ -57,8 +63,6 @@ PREBASE_MIN_BM25_SCORE   = "-0.5"
 PREBASE_MAX_MESSAGE_LEN  = "2000"  # Max user message length in characters
 
 # --- IP rate limit identifier ---
-# SECURITY NOTE: In production, set this via `wrangler secret put RATE_LIMIT_SECRET`.
-# Plain SHA-256(IP) is inadequate because IPv4 has only ~4B addresses and can be
-# brute-forced. We use HMAC-SHA256(secret, normalizedIP) to prevent pre-computation.
-# The value below is for LOCAL DEVELOPMENT ONLY.
-RATE_LIMIT_SECRET = "dev-only-insecure-placeholder-change-in-production"
+# SECURITY NOTE: Set this via `wrangler secret put RATE_LIMIT_SECRET`.
+# Never commit a production secret value in wrangler.toml.
+# For local dev, add RATE_LIMIT_SECRET to .dev.vars (which is gitignored).
