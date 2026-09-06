@@ -1,0 +1,38 @@
+{
+  "name": "@prebase/worker",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Cloudflare Worker — PreBase API backend",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "jest",
+    "test:chunker": "node --experimental-vm-modules node_modules/jest/bin/jest.js src/lib/chunker.test.ts",
+    "test:retrieval": "node --experimental-vm-modules node_modules/jest/bin/jest.js src/lib/retrieval.test.ts",
+    "db:apply": "wrangler d1 execute DB --local --file=./migrations/0001_initial.sql",
+    "db:migrate2": "wrangler d1 execute DB --local --file=./migrations/0002_global_usage.sql",
+    "db:migrate3": "wrangler d1 execute DB --local --file=./migrations/0003_auth_additions.sql",
+    "db:migrate4": "wrangler d1 execute DB --local --file=./migrations/0004_preview_usage.sql",
+    "db:seed": "wrangler d1 execute DB --local --file=./migrations/seed.sql",
+    "db:reset": "pnpm db:apply && pnpm db:migrate2 && pnpm db:migrate3 && pnpm db:migrate4 && pnpm db:seed",
+    "test:widget": "node --experimental-vm-modules node_modules/jest/bin/jest.js src/routes/widget.test.ts",
+    "test:sanitize": "node --experimental-vm-modules node_modules/jest/bin/jest.js src/lib/sanitize.test.ts",
+    "test:guard": "node --experimental-vm-modules node_modules/jest/bin/jest.js src/lib/guard.test.ts",
+    "test:ratelimit": "node --experimental-vm-modules node_modules/jest/bin/jest.js src/lib/ratelimit.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "hono": "^4.6.3"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240924.0",
+    "@types/bcryptjs": "^2.4.6",
+    "@types/jest": "^29.5.14",
+    "@types/node": "^22.7.5",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.2.5",
+    "typescript": "^5.6.3",
+    "wrangler": "^3.80.0"
+  }
+}

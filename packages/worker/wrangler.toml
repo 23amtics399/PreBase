@@ -1,0 +1,64 @@
+name = "prebase-worker"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "prebase-dev"
+database_id = "local-dev-placeholder"
+
+[ai]
+binding = "AI"
+
+# ---------------------------------------------------------------------------
+# Static Assets Configuration
+# ---------------------------------------------------------------------------
+[assets]
+directory = "public"
+
+# ---------------------------------------------------------------------------
+# Application configuration
+# All limits are plain strings (Workers bindings are always strings).
+# ---------------------------------------------------------------------------
+[vars]
+# --- AI Model ---
+# Phase 1 production model selected via Milestone 2 benchmark (2026-09-05).
+# Benchmark: granite-4.0-h-micro scored 10/11 categories, 0.88 neurons/query avg.
+# Do NOT change without re-running the benchmark.
+PREBASE_AI_MODEL = "@cf/ibm-granite/granite-4.0-h-micro"
+
+# --- Global AI daily quota ---
+# Cloudflare Workers AI free tier: 10,000 neurons/day
+# Measured avg neuron cost (granite-4.0-h-micro): 0.88 neurons/query
+# Theoretical max: floor(10000 / 0.88) = 11,363 queries/day
+# Safety factor applied: 0.70
+# Configured limit: floor(11363 × 0.70) = 7,954  ← this is the app limit
+# The theoretical capacity (11,363) is documented above for reference only.
+PREBASE_AI_DAILY_LIMIT = "7954"
+
+# --- Per-request rate limits ---
+PREBASE_PER_BOT_DAILY    = "500"   # Max requests per bot per day (all IPs combined)
+PREBASE_PER_BOT_IP_DAILY = "20"    # Max requests per visitor IP per bot per day
+PREBASE_IP_DAILY         = "100"   # Max requests per visitor IP across ALL bots per day
+
+# --- Retrieval ---
+PREBASE_CHAR_BUDGET      = "3600"  # Max characters of KB context sent to AI
+
+# --- Relevance guard ---
+# BM25 scores are negative; more negative = stronger match.
+# Chunks with score > PREBASE_MIN_BM25_SCORE are rejected as too weak.
+# Example: -0.1 is a near-zero (weak) match; -3.0 is a strong match.
+# At -0.5, a term must appear meaningfully in the chunk to pass.
+# This is a tunable starting value — adjust per knowledge base without code changes.
+PREBASE_MIN_BM25_SCORE   = "-0.5"
+
+# --- Input validation ---
+PREBASE_MAX_MESSAGE_LEN  = "2000"  # Max user message length in characters
+
+# --- IP rate limit identifier ---
+# SECURITY NOTE: In production, set this via `wrangler secret put RATE_LIMIT_SECRET`.
+# Plain SHA-256(IP) is inadequate because IPv4 has only ~4B addresses and can be
+# brute-forced. We use HMAC-SHA256(secret, normalizedIP) to prevent pre-computation.
+# The value below is for LOCAL DEVELOPMENT ONLY.
+RATE_LIMIT_SECRET = "dev-only-insecure-placeholder-change-in-production"

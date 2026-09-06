@@ -1,0 +1,22 @@
+{
+  "name": "prebase",
+  "version": "0.0.1",
+  "private": true,
+  "description": "PreBase monorepo — AI chatbot platform powered by Cloudflare",
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "scripts": {
+    "test": "pnpm -r test",
+    "test:chunker": "pnpm --filter @prebase/worker test:chunker",
+    "test:retrieval": "pnpm --filter @prebase/worker test:retrieval"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "sharp",
+      "workerd"
+    ]
+  }
+}

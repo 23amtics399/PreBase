@@ -1,0 +1,10 @@
+SELECT rowid, content FROM kb_fts WHERE kb_fts MATCH 'return' ORDER BY bm25(kb_fts) LIMIT 1;
+SELECT rowid, content FROM kb_fts WHERE kb_fts MATCH 'shipping' ORDER BY bm25(kb_fts) LIMIT 2;
+SELECT rowid, content FROM kb_fts WHERE kb_fts MATCH 'international' ORDER BY bm25(kb_fts) LIMIT 1;
+SELECT rowid, content FROM kb_fts WHERE kb_fts MATCH 'contact' ORDER BY bm25(kb_fts) LIMIT 1;
+SELECT rowid, content FROM kb_fts WHERE kb_fts MATCH 'hours' ORDER BY bm25(kb_fts) LIMIT 1;
+SELECT rowid, content FROM kb_fts WHERE kb_fts MATCH 'refund' ORDER BY bm25(kb_fts) LIMIT 1;
+SELECT rowid, content FROM kb_fts WHERE kb_fts MATCH 'expedited' ORDER BY bm25(kb_fts) LIMIT 1;
+SELECT rowid, content FROM kb_fts WHERE kb_fts MATCH 'duties' ORDER BY bm25(kb_fts) LIMIT 1;
+SELECT rowid, content FROM kb_fts WHERE kb_fts MATCH 'support' ORDER BY bm25(kb_fts) LIMIT 1;
+SELECT rowid, content FROM kb_fts WHERE kb_fts MATCH 'policy' ORDER BY bm25(kb_fts) LIMIT 1;
