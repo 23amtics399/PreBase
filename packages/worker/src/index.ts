@@ -7,6 +7,42 @@ import bots from './routes/bots';
 const app = new Hono<{ Bindings: Bindings }>();
 
 // ---------------------------------------------------------------------------
+// Global Middleware (Security Headers)
+// ---------------------------------------------------------------------------
+app.use('*', async (c, next) => {
+  await next();
+
+  // Baseline security headers for all Worker responses
+  c.res.headers.set('X-Content-Type-Options', 'nosniff');
+  c.res.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+  
+  // Protect authenticated dashboard APIs against clickjacking/framing.
+  // We explicitly EXEMPT /chat/* and /api/widget/* because they are 
+  // designed to be embedded in external customer iframes.
+  const path = new URL(c.req.url).pathname;
+  if (!path.startsWith('/chat/') && !path.startsWith('/api/widget')) {
+    c.res.headers.set('X-Frame-Options', 'DENY');
+    // For JSON APIs, CSP frame-ancestors is defense-in-depth
+    c.res.headers.set('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none';");
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Global Error Handling
+// ---------------------------------------------------------------------------
+app.onError((err, c) => {
+  // Log the internal error safely to Cloudflare (not exposed to user)
+  console.error('[Global Error]:', err.message);
+  // Return generic 500 without stack traces
+  return c.json({ error: 'internal_error', message: 'An internal server error occurred.' }, 500);
+});
+
+app.notFound((c) => {
+  // Safe generic 404
+  return c.json({ error: 'not_found', message: 'The requested resource was not found.' }, 404);
+});
+
+// ---------------------------------------------------------------------------
 // Public widget API
 // ---------------------------------------------------------------------------
 app.route('/api/widget', widget);
