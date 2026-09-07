@@ -18,8 +18,8 @@
     return;
   }
 
-  // Validate format (e.g. starts with 'bot_')
-  if (!/^bot_[a-zA-Z0-9_-]+$/.test(botId)) {
+  const BOT_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  if (!BOT_ID_RE.test(botId)) {
     console.error('[PreBase] Invalid bot ID format.');
     return;
   }
@@ -27,7 +27,7 @@
   // Get the base URL from the script src so the iframe points to the correct backend
   const scriptUrl = new URL(currentScript.src);
   const baseUrl = scriptUrl.origin;
-  const frameUrl = `${baseUrl}/frame.html?bot=${encodeURIComponent(botId)}`;
+  const frameUrl = `${baseUrl}/frame?bot=${encodeURIComponent(botId)}`;
 
   // 2. Create the host container for Shadow DOM to ensure CSS isolation
   const container = document.createElement('div');

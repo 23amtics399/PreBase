@@ -76,7 +76,7 @@ function buildEnv(overrides: Partial<TestEnv> = {}): TestEnv {
   const mockStmt = {
     bind:  jest.fn().mockReturnThis(),
     first: jest.fn().mockResolvedValue({
-      id: 'bot_456',
+      id: '00000000-0000-4000-8000-000000000456',
       name: 'FAQ Bot',
       system_prompt: 'You are a helpful assistant.',
     }),
@@ -188,39 +188,45 @@ describe('POST /api/widget/chat — input validation', () => {
     expect((await res.json() as Record<string,string>).error).toBe('invalid_bot_id');
   });
 
-  it('returns 400 for a botId with invalid characters', async () => {
-    const res = await post(buildEnv(), { botId: 'bot/../../etc', message: 'hello' });
+  it('returns 400 when botId contains invalid characters', async () => {
+    const res = await post(buildEnv(), { botId: 'invalid bot!', message: 'hello' });
+    expect(res.status).toBe(400);
+    expect((await res.json() as Record<string,string>).error).toBe('invalid_bot_id');
+  });
+
+  it('returns 400 when botId uses the old bot_ prefix format', async () => {
+    const res = await post(buildEnv(), { botId: 'bot_123', message: 'hello' });
     expect(res.status).toBe(400);
     expect((await res.json() as Record<string,string>).error).toBe('invalid_bot_id');
   });
 
   it('returns 400 when message is missing', async () => {
-    const res = await post(buildEnv(), { botId: 'bot_456' });
+    const res = await post(buildEnv(), { botId: '00000000-0000-4000-8000-000000000456' });
     expect(res.status).toBe(400);
     expect((await res.json() as Record<string,string>).error).toBe('missing_message');
   });
 
   it('returns 400 when message is not a string', async () => {
-    const res = await post(buildEnv(), { botId: 'bot_456', message: { text: 'hi' } });
+    const res = await post(buildEnv(), { botId: '00000000-0000-4000-8000-000000000456', message: { text: 'hi' } });
     expect(res.status).toBe(400);
     expect((await res.json() as Record<string,string>).error).toBe('invalid_message');
   });
 
   it('returns 400 for empty message', async () => {
-    const res = await post(buildEnv(), { botId: 'bot_456', message: '' });
+    const res = await post(buildEnv(), { botId: '00000000-0000-4000-8000-000000000456', message: '' });
     expect(res.status).toBe(400);
     expect((await res.json() as Record<string,string>).error).toBe('empty_message');
   });
 
   it('returns 400 for whitespace-only message', async () => {
-    const res = await post(buildEnv(), { botId: 'bot_456', message: '   ' });
+    const res = await post(buildEnv(), { botId: '00000000-0000-4000-8000-000000000456', message: '   ' });
     expect(res.status).toBe(400);
     expect((await res.json() as Record<string,string>).error).toBe('empty_message');
   });
 
   it('returns 400 when message exceeds the configured max length', async () => {
     const env = buildEnv({ PREBASE_MAX_MESSAGE_LEN: '10' });
-    const res = await post(env, { botId: 'bot_456', message: 'a'.repeat(11) });
+    const res = await post(env, { botId: '00000000-0000-4000-8000-000000000456', message: 'a'.repeat(11) });
     expect(res.status).toBe(400);
     expect((await res.json() as Record<string,string>).error).toBe('message_too_long');
   });
@@ -236,7 +242,7 @@ describe('POST /api/widget/chat — bot lookup', () => {
     const db = env.DB as { prepare: jest.Mock };
     const mockStmt = { bind: jest.fn().mockReturnThis(), first: jest.fn().mockResolvedValue(null) };
     db.prepare.mockReturnValue(mockStmt);
-    const res = await post(env, { botId: 'nonexistent', message: 'hello' });
+    const res = await post(env, { botId: '11111111-1111-4111-8111-111111111111', message: 'hello' });
     expect(res.status).toBe(404);
     expect((await res.json() as Record<string,string>).error).toBe('not_found');
   });
@@ -246,7 +252,7 @@ describe('POST /api/widget/chat — bot lookup', () => {
     const db = env.DB as { prepare: jest.Mock };
     const mockStmt = { bind: jest.fn().mockReturnThis(), first: jest.fn().mockResolvedValue(null) };
     db.prepare.mockReturnValue(mockStmt);
-    const res = await post(env, { botId: 'bot_private', message: 'hello' });
+    const res = await post(env, { botId: '00000000-0000-4000-8000-000000000003', message: 'hello' });
     expect(res.status).toBe(404);
     expect((await res.json() as Record<string,string>).error).toBe('not_found');
   });
@@ -268,21 +274,21 @@ describe('POST /api/widget/chat — bot lookup', () => {
 describe('POST /api/widget/chat — rate limiting', () => {
   it('returns 429 when per-IP global limit is exceeded', async () => {
     mockCheckIpGlobal.mockResolvedValue({ allowed: false, reason: 'ip_global' });
-    const res = await post(buildEnv(), { botId: 'bot_456', message: 'hello' });
+    const res = await post(buildEnv(), { botId: '00000000-0000-4000-8000-000000000456', message: 'hello' });
     expect(res.status).toBe(429);
     expect((await res.json() as Record<string,string>).error).toBe('rate_limited');
   });
 
   it('returns 429 when per-bot-per-IP limit is exceeded', async () => {
     mockCheckBotIp.mockResolvedValue({ allowed: false, reason: 'bot_ip' });
-    const res = await post(buildEnv(), { botId: 'bot_456', message: 'hello' });
+    const res = await post(buildEnv(), { botId: '00000000-0000-4000-8000-000000000456', message: 'hello' });
     expect(res.status).toBe(429);
     expect((await res.json() as Record<string,string>).error).toBe('rate_limited');
   });
 
   it('returns 429 when per-bot global limit is exceeded', async () => {
     mockCheckBotGlobal.mockResolvedValue({ allowed: false, reason: 'bot_global' });
-    const res = await post(buildEnv(), { botId: 'bot_456', message: 'hello' });
+    const res = await post(buildEnv(), { botId: '00000000-0000-4000-8000-000000000456', message: 'hello' });
     expect(res.status).toBe(429);
     expect((await res.json() as Record<string,string>).error).toBe('rate_limited');
   });
@@ -293,7 +299,7 @@ describe('POST /api/widget/chat — rate limiting', () => {
     mockFilterByRelevance.mockReturnValue([
       { content: 'text', score: -2.0, sourceFilename: 'f.md', chunkIndex: 0 },
     ]);
-    const res = await post(buildEnv(), { botId: 'bot_456', message: 'hello' });
+    const res = await post(buildEnv(), { botId: '00000000-0000-4000-8000-000000000456', message: 'hello' });
     expect(res.status).toBe(429);
     expect((await res.json() as Record<string,string>).error).toBe('service_unavailable');
   });
@@ -306,7 +312,7 @@ describe('POST /api/widget/chat — deterministic fallback (no AI call)', () => 
   it('returns fallback when FTS5 retrieval returns no chunks', async () => {
     MockFTS5Engine.prototype.search.mockResolvedValue([]);
     const env = buildEnv();
-    const res = await post(env, { botId: 'bot_456', message: 'do you sell laptops?' });
+    const res = await post(env, { botId: '00000000-0000-4000-8000-000000000456', message: 'do you sell laptops?' });
     expect(res.status).toBe(200);
     const b = await res.json() as { answer: string };
     expect(b.answer).toBe(FALLBACK_RESPONSE);
@@ -320,7 +326,7 @@ describe('POST /api/widget/chat — deterministic fallback (no AI call)', () => 
     ]);
     mockFilterByRelevance.mockReturnValue([]);
     const env = buildEnv();
-    const res = await post(env, { botId: 'bot_456', message: 'something vague' });
+    const res = await post(env, { botId: '00000000-0000-4000-8000-000000000456', message: 'something vague' });
     expect(res.status).toBe(200);
     const b = await res.json() as { answer: string };
     expect(b.answer).toBe(FALLBACK_RESPONSE);
@@ -330,7 +336,7 @@ describe('POST /api/widget/chat — deterministic fallback (no AI call)', () => 
 
   it('does NOT consume AI quota for no-context fallback', async () => {
     MockFTS5Engine.prototype.search.mockResolvedValue([]);
-    await post(buildEnv(), { botId: 'bot_456', message: 'irrelevant question' });
+    await post(buildEnv(), { botId: '00000000-0000-4000-8000-000000000456', message: 'irrelevant question' });
     expect(mockReadAiUsage).not.toHaveBeenCalled();
     expect(mockIncrementAi).not.toHaveBeenCalled();
   });
@@ -348,7 +354,7 @@ describe('POST /api/widget/chat — successful AI inference', () => {
   });
 
   it('returns { answer } for a public bot with relevant knowledge', async () => {
-    const res = await post(buildEnv(), { botId: 'bot_456', message: 'What is the return policy?' });
+    const res = await post(buildEnv(), { botId: '00000000-0000-4000-8000-000000000456', message: 'What is the return policy?' });
     expect(res.status).toBe(200);
     const b = await res.json() as { answer: string };
     expect(b.answer).toBe('AI answer here.');
@@ -357,7 +363,7 @@ describe('POST /api/widget/chat — successful AI inference', () => {
   it('calls AI with the model from PREBASE_AI_MODEL (not hardcoded)', async () => {
     const customModel = '@cf/some/other-model';
     const env = buildEnv({ PREBASE_AI_MODEL: customModel });
-    await post(env, { botId: 'bot_456', message: 'return policy?' });
+    await post(env, { botId: '00000000-0000-4000-8000-000000000456', message: 'return policy?' });
     expect(env.AI.run).toHaveBeenCalledWith(
       customModel,
       expect.objectContaining({ messages: expect.any(Array) })
@@ -365,12 +371,12 @@ describe('POST /api/widget/chat — successful AI inference', () => {
   });
 
   it('increments global AI quota only on success', async () => {
-    await post(buildEnv(), { botId: 'bot_456', message: 'What is the return policy?' });
+    await post(buildEnv(), { botId: '00000000-0000-4000-8000-000000000456', message: 'What is the return policy?' });
     expect(mockIncrementAi).toHaveBeenCalledTimes(1);
   });
 
   it('does NOT return raw KB chunks in the response', async () => {
-    const res = await post(buildEnv(), { botId: 'bot_456', message: 'return policy' });
+    const res = await post(buildEnv(), { botId: '00000000-0000-4000-8000-000000000456', message: 'return policy' });
     const b = await res.json() as Record<string, unknown>;
     expect(b).not.toHaveProperty('chunks');
     expect(b).not.toHaveProperty('context');
@@ -379,7 +385,7 @@ describe('POST /api/widget/chat — successful AI inference', () => {
   });
 
   it('does NOT return the system prompt in the response', async () => {
-    const res = await post(buildEnv(), { botId: 'bot_456', message: 'return policy' });
+    const res = await post(buildEnv(), { botId: '00000000-0000-4000-8000-000000000456', message: 'return policy' });
     const b = await res.json() as Record<string, unknown>;
     expect(b).not.toHaveProperty('systemPrompt');
     expect(b).not.toHaveProperty('system_prompt');
@@ -387,7 +393,7 @@ describe('POST /api/widget/chat — successful AI inference', () => {
   });
 
   it('does NOT return bot owner information', async () => {
-    const res = await post(buildEnv(), { botId: 'bot_456', message: 'return policy' });
+    const res = await post(buildEnv(), { botId: '00000000-0000-4000-8000-000000000456', message: 'return policy' });
     const b = await res.json() as Record<string, unknown>;
     expect(b).not.toHaveProperty('owner');
     expect(b).not.toHaveProperty('owner_id');
@@ -409,7 +415,7 @@ describe('POST /api/widget/chat — failed AI inference', () => {
   it('returns 503 when AI throws', async () => {
     const env = buildEnv();
     env.AI.run.mockRejectedValue(new Error('AbortError: inference timeout'));
-    const res = await post(env, { botId: 'bot_456', message: 'what is the policy?' });
+    const res = await post(env, { botId: '00000000-0000-4000-8000-000000000456', message: 'what is the policy?' });
     expect(res.status).toBe(503);
     expect((await res.json() as Record<string,string>).error).toBe('inference_error');
   });
@@ -417,7 +423,7 @@ describe('POST /api/widget/chat — failed AI inference', () => {
   it('does NOT increment global AI quota on AI failure', async () => {
     const env = buildEnv();
     env.AI.run.mockRejectedValue(new Error('AI down'));
-    await post(env, { botId: 'bot_456', message: 'what is the policy?' });
+    await post(env, { botId: '00000000-0000-4000-8000-000000000456', message: 'what is the policy?' });
     expect(mockIncrementAi).not.toHaveBeenCalled();
   });
 });
@@ -430,7 +436,7 @@ describe('POST /api/widget/chat — response shape', () => {
     const goodChunk = { content: 'KB text.', score: -3.0, sourceFilename: 'doc.md', chunkIndex: 0 };
     MockFTS5Engine.prototype.search.mockResolvedValue([goodChunk]);
     mockFilterByRelevance.mockReturnValue([goodChunk]);
-    const res = await post(buildEnv(), { botId: 'bot_456', message: 'tell me about returns' });
+    const res = await post(buildEnv(), { botId: '00000000-0000-4000-8000-000000000456', message: 'tell me about returns' });
     const b = await res.json() as Record<string, unknown>;
     // Public API contract: only 'answer' key, never internal telemetry
     expect(Object.keys(b)).toEqual(['answer']);
@@ -438,7 +444,7 @@ describe('POST /api/widget/chat — response shape', () => {
   });
 
   it('fallback response has exactly { answer } = FALLBACK_RESPONSE — _rag must NOT be present', async () => {
-    const res = await post(buildEnv(), { botId: 'bot_456', message: 'do you sell laptops?' });
+    const res = await post(buildEnv(), { botId: '00000000-0000-4000-8000-000000000456', message: 'do you sell laptops?' });
     const b = await res.json() as Record<string, unknown>;
     // Public API contract: only 'answer' key, never internal telemetry
     expect(Object.keys(b)).toEqual(['answer']);
@@ -447,7 +453,7 @@ describe('POST /api/widget/chat — response shape', () => {
   });
 
   it('error responses have { error, message } shape', async () => {
-    const res = await post(buildEnv(), { botId: 'bot_456' });
+    const res = await post(buildEnv(), { botId: '00000000-0000-4000-8000-000000000456' });
     const b = await res.json() as Record<string, string>;
     expect(typeof b.error).toBe('string');
     expect(typeof b.message).toBe('string');

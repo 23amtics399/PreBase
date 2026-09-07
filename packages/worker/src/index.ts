@@ -67,7 +67,7 @@ app.route('/api/bots', bots);
 // handles the 404 case (private/nonexistent bot) gracefully.
 // Bot ID validation prevents arbitrary strings from reaching the redirect.
 // ---------------------------------------------------------------------------
-const BOT_ID_RE = /^[a-zA-Z0-9_-]{1,64}$/;
+const BOT_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 app.get('/chat/:botId', (c) => {
   const botId = c.req.param('botId');

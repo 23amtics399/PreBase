@@ -14,7 +14,7 @@ bots.use('*', authMiddleware);
  * Regex for valid bot IDs (UUIDv4 pattern: hex + hyphens, or alphanumeric/underscore).
  * Also valid for newly created bots which will use crypto.randomUUID().
  */
-const BOT_ID_RE = /^[a-zA-Z0-9_-]{1,64}$/;
+const BOT_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function validateBotId(botId: string | undefined): boolean {
   return typeof botId === 'string' && BOT_ID_RE.test(botId);

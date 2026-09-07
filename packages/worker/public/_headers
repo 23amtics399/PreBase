@@ -6,12 +6,15 @@
 
 /frame
   ! X-Frame-Options
+  ! Content-Security-Policy
   Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors *;
 
 /frame.html
   ! X-Frame-Options
+  ! Content-Security-Policy
   Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors *;
 
 /widget.js
   ! X-Frame-Options
+  ! Content-Security-Policy
   Content-Security-Policy: default-src 'self'; frame-ancestors *;

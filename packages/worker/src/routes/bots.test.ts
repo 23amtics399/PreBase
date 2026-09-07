@@ -122,7 +122,7 @@ describe('Bots API', () => {
     it('should list bots for owner', async () => {
       const env = buildEnv();
       env.mockStmt.all.mockResolvedValueOnce({
-        results: [{ id: 'bot_1', name: 'Bot 1' }]
+        results: [{ id: '00000000-0000-4000-8000-000000000001', name: 'Bot 1' }]
       });
       const res = await get(env, '/api/bots');
       expect(res.status).toBe(200);
@@ -135,8 +135,8 @@ describe('Bots API', () => {
   describe('GET /api/bots/:id', () => {
     it('should get bot details if owner', async () => {
       const env = buildEnv();
-      env.mockStmt.first.mockResolvedValueOnce({ id: 'bot_1', name: 'Bot 1' });
-      const res = await get(env, '/api/bots/bot_1');
+      env.mockStmt.first.mockResolvedValueOnce({ id: '00000000-0000-4000-8000-000000000001', name: 'Bot 1' });
+      const res = await get(env, '/api/bots/00000000-0000-4000-8000-000000000001');
       expect(res.status).toBe(200);
       const data = await res.json() as any;
       expect(data.name).toBe('Bot 1');
@@ -145,7 +145,7 @@ describe('Bots API', () => {
     it('should return 404 if not found or not owner', async () => {
       const env = buildEnv();
       env.mockStmt.first.mockResolvedValueOnce(null);
-      const res = await get(env, '/api/bots/bot_1');
+      const res = await get(env, '/api/bots/00000000-0000-4000-8000-000000000001');
       expect(res.status).toBe(404);
     });
   });
@@ -153,16 +153,16 @@ describe('Bots API', () => {
   describe('PATCH /api/bots/:id', () => {
     it('should update bot fields', async () => {
       const env = buildEnv();
-      const res = await patch(env, '/api/bots/bot_1', { name: 'New Name' });
+      const res = await patch(env, '/api/bots/00000000-0000-4000-8000-000000000001', { name: 'New Name' });
       expect(res.status).toBe(200);
-      expect(env.mockStmt.bind).toHaveBeenCalledWith('New Name', expect.any(Number), 'bot_1', 'user_123');
+      expect(env.mockStmt.bind).toHaveBeenCalledWith('New Name', expect.any(Number), '00000000-0000-4000-8000-000000000001', 'user_123');
     });
   });
 
   describe('DELETE /api/bots/:id', () => {
     it('should delete a bot', async () => {
       const env = buildEnv();
-      const res = await del(env, '/api/bots/bot_1');
+      const res = await del(env, '/api/bots/00000000-0000-4000-8000-000000000001');
       expect(res.status).toBe(200);
       expect(env.DB.prepare).toHaveBeenCalledWith(expect.stringContaining('DELETE FROM bots'));
     });
@@ -171,14 +171,14 @@ describe('Bots API', () => {
   describe('POST /api/bots/:id/publish', () => {
     it('should require explicit confirmation to publish', async () => {
       const env = buildEnv();
-      const res = await post(env, '/api/bots/bot_1/publish', { confirmed: true });
+      const res = await post(env, '/api/bots/00000000-0000-4000-8000-000000000001/publish', { confirmed: true });
       expect(res.status).toBe(200);
       expect(env.DB.prepare).toHaveBeenCalledWith(expect.stringContaining('is_public = 1'));
     });
     
     it('should reject without confirmation', async () => {
       const env = buildEnv();
-      const res = await post(env, '/api/bots/bot_1/publish', {});
+      const res = await post(env, '/api/bots/00000000-0000-4000-8000-000000000001/publish', {});
       expect(res.status).toBe(400);
     });
   });
@@ -187,7 +187,7 @@ describe('Bots API', () => {
     it('should upload knowledge and chunk correctly', async () => {
       const env = buildEnv({ PREBASE_MAX_KB_SIZE: '10000', PREBASE_MAX_UPLOAD_SIZE: '5000' });
       env.mockStmt.first
-        .mockResolvedValueOnce({ id: 'bot_1' }) // Verify ownership
+        .mockResolvedValueOnce({ id: '00000000-0000-4000-8000-000000000001' }) // Verify ownership
         .mockResolvedValueOnce({ id: 99 }); // source id
       env.mockStmt.all.mockResolvedValueOnce({ results: [] }); // Current byte_size
 
@@ -198,7 +198,7 @@ describe('Bots API', () => {
       const file = new File([fileContent], "test.txt", { type: "text/plain" });
       formData.append("file", file);
 
-      const req = new Request('http://localhost/api/bots/bot_1/knowledge', {
+      const req = new Request('http://localhost/api/bots/00000000-0000-4000-8000-000000000001/knowledge', {
         method: 'POST',
         body: formData,
       });
@@ -213,7 +213,7 @@ describe('Bots API', () => {
 
     it('should reject uploads exceeding limits', async () => {
       const env = buildEnv({ PREBASE_MAX_KB_SIZE: '10', PREBASE_MAX_UPLOAD_SIZE: '5000' });
-      env.mockStmt.first.mockResolvedValueOnce({ id: 'bot_1' }); // Verify ownership
+      env.mockStmt.first.mockResolvedValueOnce({ id: '00000000-0000-4000-8000-000000000001' }); // Verify ownership
       env.mockStmt.all.mockResolvedValueOnce({ results: [{ byte_size: 5 }] }); // Current byte_size
 
       const app = buildApp('user_123');
@@ -223,7 +223,7 @@ describe('Bots API', () => {
       const file = new File([fileContent], "test.txt", { type: "text/plain" });
       formData.append("file", file);
 
-      const req = new Request('http://localhost/api/bots/bot_1/knowledge', {
+      const req = new Request('http://localhost/api/bots/00000000-0000-4000-8000-000000000001/knowledge', {
         method: 'POST',
         body: formData,
       });
@@ -239,12 +239,12 @@ describe('Bots API', () => {
   describe('POST /api/bots/:id/chat', () => {
     it('should handle private preview chat successfully', async () => {
       const env = buildEnv();
-      env.mockStmt.first.mockResolvedValueOnce({ id: 'bot_1', system_prompt: 'prompt' });
+      env.mockStmt.first.mockResolvedValueOnce({ id: '00000000-0000-4000-8000-000000000001', system_prompt: 'prompt' });
       
       (ratelimit.checkPreviewLimit as jest.Mock).mockResolvedValueOnce({ allowed: true });
       (rag.executeRagPipeline as jest.Mock).mockResolvedValueOnce({ status: 200, answer: 'Preview AI response' });
 
-      const res = await post(env, '/api/bots/bot_1/chat', { message: 'hello' });
+      const res = await post(env, '/api/bots/00000000-0000-4000-8000-000000000001/chat', { message: 'hello' });
       expect(res.status).toBe(200);
       const data = await res.json() as any;
       expect(data.answer).toBe('Preview AI response');
@@ -252,11 +252,11 @@ describe('Bots API', () => {
 
     it('should enforce preview rate limits', async () => {
       const env = buildEnv();
-      env.mockStmt.first.mockResolvedValueOnce({ id: 'bot_1', system_prompt: 'prompt' });
+      env.mockStmt.first.mockResolvedValueOnce({ id: '00000000-0000-4000-8000-000000000001', system_prompt: 'prompt' });
       
       (ratelimit.checkPreviewLimit as jest.Mock).mockResolvedValueOnce({ allowed: false });
 
-      const res = await post(env, '/api/bots/bot_1/chat', { message: 'hello' });
+      const res = await post(env, '/api/bots/00000000-0000-4000-8000-000000000001/chat', { message: 'hello' });
       expect(res.status).toBe(429);
       const data = await res.json() as any;
       expect(data.error).toBe('rate_limited');
