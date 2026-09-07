@@ -23,8 +23,6 @@ export type RagStatus =
  */
 export interface RagTelemetry {
   ragStatus: RagStatus;
-  /** FTS5 query string sent to D1 (sanitized, AND or OR joined). */
-  ftsQuery: string | null;
   /** Whether the AND pass was used (true) or OR fallback was triggered (false). */
   retrievalMode: 'and' | 'or_fallback' | 'none';
   /** Number of chunks returned by FTS5 before the relevance guard. */
@@ -77,7 +75,6 @@ export async function executeRagPipeline(
   if (rawChunks.length === 0) {
     const telemetry: RagTelemetry = {
       ragStatus: 'fallback_no_candidates',
-      ftsQuery: sanitized,
       retrievalMode: 'none',
       candidateCount: 0,
       passedGuardCount: 0,
@@ -96,7 +93,6 @@ export async function executeRagPipeline(
   if (relevantChunks.length === 0) {
     const telemetry: RagTelemetry = {
       ragStatus: 'fallback_below_threshold',
-      ftsQuery: sanitized,
       retrievalMode,
       candidateCount: rawChunks.length,
       passedGuardCount: 0,
@@ -114,7 +110,6 @@ export async function executeRagPipeline(
   if (currentAiCalls >= aiDailyLimit) {
     const telemetry: RagTelemetry = {
       ragStatus: 'fallback_ai_quota',
-      ftsQuery: sanitized,
       retrievalMode,
       candidateCount: rawChunks.length,
       passedGuardCount: relevantChunks.length,
@@ -179,7 +174,6 @@ export async function executeRagPipeline(
 
     const telemetry: RagTelemetry = {
       ragStatus: 'ai_error',
-      ftsQuery: sanitized,
       retrievalMode,
       candidateCount: rawChunks.length,
       passedGuardCount: relevantChunks.length,
@@ -198,7 +192,6 @@ export async function executeRagPipeline(
 
   const telemetry: RagTelemetry = {
     ragStatus: 'ai_called',
-    ftsQuery: sanitized,
     retrievalMode,
     candidateCount: rawChunks.length,
     passedGuardCount: relevantChunks.length,
