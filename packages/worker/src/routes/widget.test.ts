@@ -426,19 +426,23 @@ describe('POST /api/widget/chat — failed AI inference', () => {
 // 7. Response shape invariants
 // ---------------------------------------------------------------------------
 describe('POST /api/widget/chat — response shape', () => {
-  it('success response has { answer, _rag } shape', async () => {
+  it('success response has exactly { answer } — _rag must NOT be present', async () => {
     const goodChunk = { content: 'KB text.', score: -3.0, sourceFilename: 'doc.md', chunkIndex: 0 };
     MockFTS5Engine.prototype.search.mockResolvedValue([goodChunk]);
     mockFilterByRelevance.mockReturnValue([goodChunk]);
     const res = await post(buildEnv(), { botId: 'bot_456', message: 'tell me about returns' });
     const b = await res.json() as Record<string, unknown>;
-    expect(Object.keys(b)).toEqual(['answer', '_rag']);
+    // Public API contract: only 'answer' key, never internal telemetry
+    expect(Object.keys(b)).toEqual(['answer']);
+    expect(b).not.toHaveProperty('_rag');
   });
 
-  it('fallback response has { answer, _rag } with answer = FALLBACK_RESPONSE', async () => {
+  it('fallback response has exactly { answer } = FALLBACK_RESPONSE — _rag must NOT be present', async () => {
     const res = await post(buildEnv(), { botId: 'bot_456', message: 'do you sell laptops?' });
     const b = await res.json() as Record<string, unknown>;
-    expect(Object.keys(b)).toEqual(['answer', '_rag']);
+    // Public API contract: only 'answer' key, never internal telemetry
+    expect(Object.keys(b)).toEqual(['answer']);
+    expect(b).not.toHaveProperty('_rag');
     expect(b.answer).toBe(FALLBACK_RESPONSE);
   });
 
