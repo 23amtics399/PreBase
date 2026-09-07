@@ -3,6 +3,7 @@ import type { Bindings } from './lib/types';
 import widget from './routes/widget';
 import auth from './routes/auth';
 import bots from './routes/bots';
+import { cors } from 'hono/cors';
 
 const app = new Hono<{ Bindings: Bindings }>();
 
@@ -42,9 +43,11 @@ app.notFound((c) => {
   return c.json({ error: 'not_found', message: 'The requested resource was not found.' }, 404);
 });
 
+
 // ---------------------------------------------------------------------------
 // Public widget API
 // ---------------------------------------------------------------------------
+app.use('/api/widget/*', cors({ origin: '*' }));
 app.route('/api/widget', widget);
 
 // ---------------------------------------------------------------------------
