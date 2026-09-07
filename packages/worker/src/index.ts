@@ -35,7 +35,7 @@ app.onError((err, c) => {
   // Log the internal error safely to Cloudflare (not exposed to user)
   console.error('[Global Error]:', err.message);
   // Return generic 500 without stack traces
-  return c.json({ error: 'internal_error', message: 'An internal server error occurred.' }, 500);
+  return c.json({ error: 'internal_error', message: 'An internal error occurred.' }, 500);
 });
 
 app.notFound((c) => {

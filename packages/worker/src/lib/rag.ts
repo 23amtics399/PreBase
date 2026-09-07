@@ -2,6 +2,7 @@ import type { Bindings } from './types';
 import { FTS5Engine } from './retrieval';
 import { filterByRelevance } from './guard';
 import { readGlobalAiUsage, incrementGlobalAiUsage } from './ratelimit';
+import { buildPrompt } from './prompt';
 
 export const FALLBACK_RESPONSE =
   "I couldn't find information about that in this bot's knowledge base.";
@@ -128,30 +129,19 @@ export async function executeRagPipeline(
 
   // 4. Build system prompt with retrieved context
   const contextText = relevantChunks.map(r => r.content).join('\n\n');
-  const ownerInstructions = systemPrompt?.trim() ? systemPrompt.trim() : 'You are a helpful assistant.';
-
-  const finalSystemPrompt = [
-    ownerInstructions,
-    '',
-    'Use only the following knowledge base content to answer the user\'s question.',
-    'If the answer is not clearly supported by the provided context, say:',
-    '"I don\'t have information about that in this bot\'s knowledge base."',
-    'Do not invent facts not present in the context below.',
-    '',
-    '=== Knowledge Base Context ===',
-    contextText,
-    '=== End of Context ===',
-  ].join('\n');
+  
+  const messages = buildPrompt({
+    ownerInstructions: systemPrompt ?? '',
+    knowledge: contextText,
+    userMessage: message,
+  });
 
   // 5. Call AI
   let answer: string;
   let neuronsUsed: number | null = null;
   try {
     const response = await env.AI.run(env.PREBASE_AI_MODEL, {
-      messages: [
-        { role: 'system', content: finalSystemPrompt },
-        { role: 'user',   content: message },
-      ],
+      messages,
     }) as {
       response?: string;
       choices?: Array<{ message: { content: string } }>;
