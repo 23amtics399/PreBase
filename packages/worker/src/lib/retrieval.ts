@@ -17,6 +17,36 @@ export interface RetrievalEngine {
   ): Promise<RetrievalResult[]>;
 }
 
+/**
+ * Executes a single FTS5 MATCH query and returns raw DB rows.
+ * Scoped strictly to the given botId so knowledge never leaks cross-bot.
+ */
+async function runFts5Query(
+  db: D1Database,
+  ftsQuery: string,
+  botId: string
+): Promise<Array<{ content: string; chunkIndex: number; sourceFilename: string; score: number }>> {
+  const { results } = await db
+    .prepare(
+      `SELECT
+         kc.content,
+         kc.chunk_index  AS chunkIndex,
+         ks.filename     AS sourceFilename,
+         bm25(kb_fts)    AS score
+       FROM kb_fts
+       JOIN kb_chunks  kc ON kc.id = kb_fts.rowid
+       JOIN kb_sources ks ON ks.id = kc.source_id
+       WHERE kb_fts MATCH ?
+         AND kb_fts.bot_id = ?
+       ORDER BY score ASC
+       LIMIT 10`
+    )
+    .bind(ftsQuery, botId)
+    .all<{ content: string; chunkIndex: number; sourceFilename: string; score: number }>();
+
+  return results ?? [];
+}
+
 export class FTS5Engine implements RetrievalEngine {
   async search(
     db: D1Database,
@@ -25,51 +55,35 @@ export class FTS5Engine implements RetrievalEngine {
     charBudget: number
   ): Promise<RetrievalResult[]> {
     // Sanitize the raw query into a safe FTS5 MATCH expression.
-    // Returns null if no meaningful terms remain — do not query FTS5.
+    // sanitizeFtsQuery returns an AND-joined content-word query by default,
+    // falling back to OR-joined if stop-word removal leaves nothing.
+    // Returns null if no meaningful terms remain.
     const ftsQuery = sanitizeFtsQuery(query);
     if (ftsQuery === null) {
       return [];
     }
 
-    // FTS5 BM25 full-text search scoped strictly to the requested bot.
-    // bm25() returns negative values; more negative = stronger match.
-    // We retrieve the top 10 candidates; the caller applies the relevance guard.
-    //
-    // IMPORTANT: Every query includes `AND kb_fts.bot_id = ?` so that knowledge
-    // from other bots is never accessible, even if retrieved globally.
-    const stmt = db
-      .prepare(
-        `SELECT
-           kc.content,
-           kc.chunk_index  AS chunkIndex,
-           ks.filename     AS sourceFilename,
-           bm25(kb_fts)    AS score
-         FROM kb_fts
-         JOIN kb_chunks  kc ON kc.id = kb_fts.rowid
-         JOIN kb_sources ks ON ks.id = kc.source_id
-         WHERE kb_fts MATCH ?
-           AND kb_fts.bot_id = ?
-         ORDER BY score ASC
-         LIMIT 10`
-      )
-      .bind(ftsQuery, botId);
+    // --- Primary pass: use the sanitized query as-is (AND-joined preferred) ---
+    let rows = await runFts5Query(db, ftsQuery, botId);
 
-    const { results } = await stmt.all<{
-      content: string;
-      chunkIndex: number;
-      sourceFilename: string;
-      score: number;
-    }>();
+    // --- Fallback pass: if AND returned nothing, try OR on the same tokens ---
+    // This handles cases where the document uses only some of the query words.
+    // Example: "often AND passwords AND changed" may fail if the chunk reads
+    // "Passwords must be changed every 90 days" (missing "often").
+    if (rows.length === 0 && ftsQuery.includes(' AND ')) {
+      const orFallback = ftsQuery.replace(/ AND /g, ' OR ');
+      rows = await runFts5Query(db, orFallback, botId);
+    }
 
-    if (!results || results.length === 0) {
+    if (rows.length === 0) {
       return [];
     }
 
-    // Apply character budget: accumulate chunks until the budget is exhausted.
+    // Apply character budget: accumulate top-scoring chunks until exhausted.
     let usedChars = 0;
     const selected: RetrievalResult[] = [];
 
-    for (const row of results) {
+    for (const row of rows) {
       if (usedChars + row.content.length > charBudget) {
         break;
       }

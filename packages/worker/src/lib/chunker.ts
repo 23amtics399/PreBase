@@ -27,7 +27,10 @@ export interface ChunkerOptions {
 }
 
 const DEFAULT_MAX_CHUNK_CHARS = 1500;
-const DEFAULT_MIN_CHUNK_CHARS = 100;
+// Lowered from 100 → 40 so short single-fact docs (e.g. one-sentence product
+// descriptions ~75 chars) are not silently discarded. Any chunk with at least
+// one complete sentence is worth indexing.
+const DEFAULT_MIN_CHUNK_CHARS = 40;
 
 // Matches Markdown headings: # to ####
 const HEADING_RE = /^#{1,4}\s+.+/;

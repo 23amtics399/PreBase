@@ -169,7 +169,7 @@ widget.post('/chat', async (c) => {
     );
   }
 
-  return c.json({ answer: ragResult.answer });
+  return c.json({ answer: ragResult.answer, _rag: ragResult._rag });
 });
 
 // ---------------------------------------------------------------------------
