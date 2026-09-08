@@ -27,10 +27,14 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20240924.0",
+    "@jest/globals": "^30.5.1",
     "@types/bcryptjs": "^2.4.6",
+    "@types/better-sqlite3": "^9.6.0",
     "@types/jest": "^29.5.14",
     "@types/node": "^22.7.5",
+    "better-sqlite3": "^13.0.3",
     "jest": "^29.7.0",
+    "miniflare": "5.20260907.0-alpha",
     "ts-jest": "^29.2.5",
     "typescript": "^5.6.3",
     "wrangler": "^3.80.0"

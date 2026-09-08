@@ -1,4 +1,4 @@
-import type { D1Database, Ai } from '@cloudflare/workers-types';
+import type { D1Database, Ai, Queue } from '@cloudflare/workers-types';
 
 /**
  * Cloudflare Worker environment bindings for PreBase.
@@ -39,8 +39,14 @@ export type Bindings = {
 
   // Preview Limits
   PREBASE_PREVIEW_LIMIT?: string;
-};
 
+  // Smart Enrichment
+  ENRICHMENT_QUEUE: Queue<any>;
+  GEMINI_API_KEY: string;
+  PREBASE_GEMINI_MODEL: string;
+  PREBASE_ENRICH_MAX_CHUNKS_PER_JOB: string;
+  PREBASE_ENRICH_MAX_RETRIES: string;
+};
 export type Variables = {
   userId: string;
 };

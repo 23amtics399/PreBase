@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import type { Bindings } from './lib/types';
+import type { MessageBatch, ExecutionContext } from '@cloudflare/workers-types';
 import widget from './routes/widget';
 import auth from './routes/auth';
 import bots from './routes/bots';
@@ -80,4 +81,11 @@ app.get('/chat/:botId', (c) => {
 });
 
 
-export default app;
+import { handleEnrichmentBatch, EnrichmentMessage } from './lib/enrichment';
+
+export default {
+  fetch: app.fetch,
+  async queue(batch: MessageBatch<EnrichmentMessage>, env: Bindings, ctx: ExecutionContext) {
+    await handleEnrichmentBatch(batch.messages, env);
+  }
+};

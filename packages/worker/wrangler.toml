@@ -62,6 +62,25 @@ PREBASE_MIN_BM25_SCORE   = "-0.5"
 # --- Input validation ---
 PREBASE_MAX_MESSAGE_LEN  = "2000"  # Max user message length in characters
 
+# --- Smart Enrichment ---
+PREBASE_GEMINI_MODEL = "gemini-3.6-flash"
+PREBASE_ENRICH_MAX_CHUNKS_PER_JOB = "25"
+PREBASE_ENRICH_MAX_RETRIES = "3"
+
+# ---------------------------------------------------------------------------
+# Queues Configuration
+# ---------------------------------------------------------------------------
+[[queues.producers]]
+queue = "prebase-enrichment-queue"
+binding = "ENRICHMENT_QUEUE"
+
+[[queues.consumers]]
+queue = "prebase-enrichment-queue"
+max_batch_size = 100
+max_batch_timeout = 30
+max_retries = 3
+dead_letter_queue = "prebase-enrichment-dlq"
+
 # --- IP rate limit identifier ---
 # SECURITY NOTE: Set this via `wrangler secret put RATE_LIMIT_SECRET`.
 # Never commit a production secret value in wrangler.toml.

@@ -10,7 +10,7 @@ module.exports = {
         useESM: true,
         tsconfig: {
           // Override tsconfig for tests — use node module resolution
-          module: 'CommonJS',
+          module: 'ES2022',
           moduleResolution: 'node',
           target: 'ES2022',
           strict: true,
