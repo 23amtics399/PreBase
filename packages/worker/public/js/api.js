@@ -144,9 +144,12 @@ export async function getKnowledge(botId) {
   return request('GET', `/api/bots/${encodeURIComponent(botId)}/knowledge`);
 }
 
-export async function uploadKnowledge(botId, file) {
+export async function uploadKnowledge(botId, file, enrichment = false) {
   const fd = new FormData();
   fd.append('file', file);
+  if (enrichment) {
+    fd.append('enrichment', 'true');
+  }
   return request('POST', `/api/bots/${encodeURIComponent(botId)}/knowledge`, fd, true);
 }
 

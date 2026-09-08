@@ -297,6 +297,48 @@ function buildKnowledgeSection(bot, initialSources, pageContainer) {
   sourceListEl.id = 'source-list';
   body.appendChild(sourceListEl);
 
+  // Smart Enrichment Opt-in
+  const enrichmentSection = document.createElement('div');
+  enrichmentSection.className = 'enrichment-opt-in';
+  enrichmentSection.style.marginTop = '16px';
+  enrichmentSection.style.padding = '16px';
+  enrichmentSection.style.border = '1px solid var(--neutral-300)';
+  enrichmentSection.style.borderRadius = '8px';
+  enrichmentSection.style.backgroundColor = 'var(--neutral-50)';
+
+  const enrichLabel = document.createElement('label');
+  enrichLabel.style.display = 'flex';
+  enrichLabel.style.alignItems = 'flex-start';
+  enrichLabel.style.gap = '8px';
+  enrichLabel.style.cursor = 'pointer';
+
+  const enrichCheckbox = document.createElement('input');
+  enrichCheckbox.type = 'checkbox';
+  enrichCheckbox.id = 'enrichment-checkbox';
+  enrichCheckbox.style.marginTop = '4px';
+
+  const enrichText = document.createElement('div');
+  enrichText.innerHTML = `
+    <strong style="display:block; margin-bottom: 4px;">Enable Smart Enrichment</strong>
+    <p style="margin: 0 0 8px 0; font-size: 0.9rem; color: var(--neutral-700);">Use AI to analyze this document and improve how your bot finds relevant information. This may send the uploaded document content to Google's Gemini API for processing.</p>
+    <p style="margin: 0 0 8px 0; font-size: 0.9rem; color: var(--neutral-700);">Smart Enrichment generates search metadata such as possible questions, keywords, aliases, topics, and entities. Your original document remains the authoritative source used to generate answers.</p>
+  `;
+
+  enrichLabel.appendChild(enrichCheckbox);
+  enrichLabel.appendChild(enrichText);
+  enrichmentSection.appendChild(enrichLabel);
+
+  const enrichPrivacy = document.createElement('div');
+  enrichPrivacy.style.marginTop = '12px';
+  enrichPrivacy.style.paddingTop = '12px';
+  enrichPrivacy.style.borderTop = '1px solid var(--neutral-200)';
+  enrichPrivacy.style.fontSize = '0.85rem';
+  enrichPrivacy.style.color = 'var(--neutral-600)';
+  enrichPrivacy.innerHTML = `<strong>Privacy notice:</strong> When Smart Enrichment is enabled, the uploaded document content is sent to Google's Gemini API for processing. Do not enable this feature for passwords, credentials, personal data, medical information, financial information, confidential documents, or anything you are not authorized to send to a third-party AI service.`;
+  enrichmentSection.appendChild(enrichPrivacy);
+
+  body.appendChild(enrichmentSection);
+
   // Upload zone
   const uploadSection = document.createElement('div');
   uploadSection.style.marginTop = '16px';
@@ -404,7 +446,17 @@ function buildKnowledgeSection(bot, initialSources, pageContainer) {
     nameEl.textContent = src.filename; // XSS safe — filename is user-uploaded
     const metaEl = document.createElement('div');
     metaEl.className = 'source-meta';
-    metaEl.textContent = `${formatBytes(src.byte_size)} · ${src.chunk_count} chunk${src.chunk_count !== 1 ? 's' : ''}`;
+    
+    let enrichStatusText = '';
+    if (src.enrichment_status === 'queued' || src.enrichment_status === 'processing') {
+      enrichStatusText = ' · Smart enrichment: Processing…';
+    } else if (src.enrichment_status === 'completed') {
+      enrichStatusText = ' · Smart enrichment: Complete';
+    } else if (src.enrichment_status === 'failed') {
+      enrichStatusText = ' · Smart enrichment: Failed. Your original knowledge is still available for normal search.';
+    }
+
+    metaEl.textContent = `${formatBytes(src.byte_size)} · ${src.chunk_count} chunk${src.chunk_count !== 1 ? 's' : ''}${enrichStatusText}`;
 
     info.appendChild(nameEl);
     info.appendChild(metaEl);
@@ -457,7 +509,8 @@ function buildKnowledgeSection(bot, initialSources, pageContainer) {
     uploadZone.style.pointerEvents = 'none';
     fileInput.disabled = true;
 
-    const res = await uploadKnowledge(bot.id, file);
+    const isEnrichmentEnabled = document.getElementById('enrichment-checkbox').checked;
+    const res = await uploadKnowledge(bot.id, file, isEnrichmentEnabled);
 
     uploadZone.style.pointerEvents = '';
     fileInput.disabled = false;

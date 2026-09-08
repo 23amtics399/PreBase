@@ -278,7 +278,7 @@ bots.get('/:id/knowledge', async (c) => {
   if (!bot) return c.json({ error: 'not_found', message: 'Bot not found.' }, 404);
 
   const { results } = await c.env.DB.prepare(
-    `SELECT id, filename, byte_size, chunk_count, uploaded_at
+    `SELECT id, filename, byte_size, chunk_count, uploaded_at, enrichment_status
      FROM kb_sources
      WHERE bot_id = ?
      ORDER BY uploaded_at DESC`
@@ -368,11 +368,13 @@ bots.post('/:id/knowledge', async (c) => {
 
   // D1 Batch transaction to guarantee atomic insertion of source + chunks
   // 1. Insert kb_sources and RETURNING id
+  const enrichmentOptIn = formData['enrichment'] === 'true' || formData['enrichment'] === '1';
+
   const sourceResult = await c.env.DB.prepare(
-    `INSERT INTO kb_sources (bot_id, filename, byte_size, chunk_count, uploaded_at)
-     VALUES (?, ?, ?, ?, ?)
+    `INSERT INTO kb_sources (bot_id, filename, byte_size, chunk_count, uploaded_at, enrichment_status)
+     VALUES (?, ?, ?, ?, ?, ?)
      RETURNING id`
-  ).bind(botId, filename, textBytes, chunks.length, now).first<{ id: number }>();
+  ).bind(botId, filename, textBytes, chunks.length, now, enrichmentOptIn ? 'queued' : 'not_requested').first<{ id: number }>();
 
   if (!sourceResult) {
     return c.json({ error: 'insert_failed', message: 'Failed to create knowledge source.' }, 500);
@@ -382,14 +384,43 @@ bots.post('/:id/knowledge', async (c) => {
   // 2. Insert kb_chunks
   const chunkStmts = chunks.map(chunk => 
     c.env.DB.prepare(
-      `INSERT INTO kb_chunks (bot_id, source_id, chunk_index, content) VALUES (?, ?, ?, ?)`
+      `INSERT INTO kb_chunks (bot_id, source_id, chunk_index, content) VALUES (?, ?, ?, ?) RETURNING id`
     ).bind(botId, sourceId, chunk.chunkIndex, chunk.content)
   );
 
   // Execute chunk insertions in batch. The triggers on kb_chunks will sync kb_fts.
-  await c.env.DB.batch(chunkStmts);
+  const batchResults = await c.env.DB.batch(chunkStmts);
 
-  return c.json({ id: sourceId, filename, byte_size: textBytes, chunk_count: chunks.length, uploaded_at: now }, 201);
+  // Dispatch to Smart Enrichment Queue (Explicit Opt-in ONLY)
+  
+
+  if (enrichmentOptIn) {
+    const maxChunksPerJob = parseInt(c.env.PREBASE_ENRICH_MAX_CHUNKS_PER_JOB || '25', 10);
+    
+    // Build queue messages using the returned chunk IDs
+    const queueMessages: { body: any }[] = [];
+    for (let i = 0; i < chunks.length; i++) {
+      const chunkIdResult = batchResults[i].results[0] as { id: number } | undefined;
+      if (chunkIdResult) {
+        queueMessages.push({
+          body: {
+            version: 1,
+            chunkId: chunkIdResult.id,
+            botId,
+            sourceId
+          }
+        });
+      }
+    }
+
+    // Send messages in batches to respect Queue batch limits
+    for (let i = 0; i < queueMessages.length; i += maxChunksPerJob) {
+      const batch = queueMessages.slice(i, i + maxChunksPerJob);
+      await c.env.ENRICHMENT_QUEUE.sendBatch(batch);
+    }
+  }
+
+  return c.json({ id: sourceId, filename, byte_size: textBytes, chunk_count: chunks.length, uploaded_at: now, enrichment_status: enrichmentOptIn ? 'queued' : 'not_requested' }, 201);
 });
 
 // ---------------------------------------------------------------------------

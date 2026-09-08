@@ -184,8 +184,8 @@ describe('Bots API', () => {
   });
 
   describe('POST /api/bots/:id/knowledge', () => {
-    it('should upload knowledge and chunk correctly', async () => {
-      const env = buildEnv({ PREBASE_MAX_KB_SIZE: '10000', PREBASE_MAX_UPLOAD_SIZE: '5000' });
+    it('should upload knowledge without enrichment by default', async () => {
+      const env = buildEnv({ PREBASE_MAX_KB_SIZE: '10000', PREBASE_MAX_UPLOAD_SIZE: '5000', ENRICHMENT_QUEUE: { sendBatch: jest.fn() } as any });
       env.mockStmt.first
         .mockResolvedValueOnce({ id: '00000000-0000-4000-8000-000000000001' }) // Verify ownership
         .mockResolvedValueOnce({ id: 99 }); // source id
@@ -208,7 +208,46 @@ describe('Bots API', () => {
       expect(res.status).toBe(201);
       const data = await res.json() as any;
       expect(data.id).toBe(99);
+      expect(data.enrichment_status).toBe('not_requested');
       expect(env.DB.batch).toHaveBeenCalled();
+      expect((env as any).ENRICHMENT_QUEUE.sendBatch).not.toHaveBeenCalled();
+    });
+
+    it('should upload knowledge and queue enrichment when requested', async () => {
+      const env = buildEnv({ PREBASE_MAX_KB_SIZE: '10000', PREBASE_MAX_UPLOAD_SIZE: '5000', ENRICHMENT_QUEUE: { sendBatch: jest.fn() } as any });
+      env.mockStmt.first
+        .mockResolvedValueOnce({ id: '00000000-0000-4000-8000-000000000001' }) // Verify ownership
+        .mockResolvedValueOnce({ id: 99 }); // source id
+      env.mockStmt.all.mockResolvedValueOnce({ results: [] }); // Current byte_size
+
+      const app = buildApp('user_123');
+      const formData = new FormData();
+      
+      const fileContent = "This is a test document. ".repeat(10);
+      const file = new File([fileContent], "test.txt", { type: "text/plain" });
+      formData.append("file", file);
+      formData.append("enrichment", "true");
+
+      // Mock the batch results that returns chunk IDs
+      env.DB.batch = jest.fn().mockResolvedValue([{ results: [{ id: 101 }] }]);
+
+      const req = new Request('http://localhost/api/bots/00000000-0000-4000-8000-000000000001/knowledge', {
+        method: 'POST',
+        body: formData,
+      });
+      const ctx = { waitUntil: jest.fn(), passThroughOnException: jest.fn() } as any;
+      const res = await app.fetch(req, env, ctx);
+      
+      expect(res.status).toBe(201);
+      const data = await res.json() as any;
+      expect(data.id).toBe(99);
+      expect(data.enrichment_status).toBe('queued');
+      expect(env.DB.batch).toHaveBeenCalled();
+      expect((env as any).ENRICHMENT_QUEUE.sendBatch).toHaveBeenCalledWith(expect.arrayContaining([
+        expect.objectContaining({
+          body: { version: 1, chunkId: 101, botId: '00000000-0000-4000-8000-000000000001', sourceId: 99 }
+        })
+      ]));
     });
 
     it('should reject uploads exceeding limits', async () => {
