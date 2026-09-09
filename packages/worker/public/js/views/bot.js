@@ -78,12 +78,56 @@ export async function renderBot(container, botId, navigate) {
   // Render all sections
   container.appendChild(buildBasicInfoSection(bot, h1));
   container.appendChild(buildInstructionsSection(bot));
-  container.appendChild(buildKnowledgeSection(bot, sources, container));
+  const knowledgeSection = buildKnowledgeSection(bot, sources, container);
+  container.appendChild(knowledgeSection);
   container.appendChild(buildPreviewSection(bot));
   container.appendChild(buildPublishSection(bot, navigate));
 
   // Delete bot
   deleteBtn.addEventListener('click', () => openDeleteBotModal(bot, navigate));
+
+  // ── Enrichment status polling ──────────────────────────────────────────────
+  // Polls every 4 seconds while any source is queued/processing.
+  // Stops automatically when all sources reach a terminal state, or the
+  // container leaves the DOM (user navigated away). Guard prevents double-start.
+  // Called at initial render AND after each enriched upload so status updates
+  // appear without a manual page refresh.
+  const POLL_INTERVAL_MS = 4000;
+  const isPending = s => s.enrichment_status === 'queued' || s.enrichment_status === 'processing';
+  let pollTimer = null;
+
+  function stopPolling() {
+    if (pollTimer !== null) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+  }
+
+  async function pollEnrichmentStatus() {
+    if (!document.contains(container)) { stopPolling(); return; }
+
+    const res = await getKnowledge(botId);
+    if (!res.ok) return; // transient failure — keep polling
+
+    const updated = res.data?.sources || [];
+    knowledgeSection._refreshSources?.(updated);
+
+    if (!updated.some(isPending)) stopPolling();
+  }
+
+  function startPolling() {
+    // Already running — skip
+    if (pollTimer !== null) return;
+    pollTimer = setInterval(pollEnrichmentStatus, POLL_INTERVAL_MS);
+  }
+
+  // Start polling immediately if sources are pending on load
+  if (sources.some(isPending)) {
+    startPolling();
+  }
+
+  // Expose startPolling so upload handler can trigger it after upload
+  knowledgeSection._startPolling = startPolling;
 }
 
 // ==========================================================================
@@ -525,6 +569,10 @@ function buildKnowledgeSection(bot, initialSources, pageContainer) {
     refreshUsage();
     refreshSourceList();
     showUploadStatus(`"${file.name}" uploaded successfully (${res.data.chunk_count} chunks).`, 'success');
+
+    // If enrichment was requested, kick off status polling immediately
+    // so the user sees the status update without a manual page refresh.
+    section._startPolling?.();
   }
 
   function showUploadStatus(msg, type) {
@@ -552,6 +600,16 @@ function buildKnowledgeSection(bot, initialSources, pageContainer) {
   uploadZone.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInput.click(); }
   });
+
+  // Expose a refresh hook for enrichment-status polling.
+  // renderBot() calls section._refreshSources(newSources) while any source is
+  // queued/processing. Updates internal state and re-renders only the source
+  // list and usage bar — not the whole page.
+  section._refreshSources = function(newSources) {
+    sources = newSources;
+    refreshUsage();
+    refreshSourceList();
+  };
 
   return section;
 }

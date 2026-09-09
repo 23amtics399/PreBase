@@ -86,6 +86,15 @@ import { handleEnrichmentBatch, EnrichmentMessage } from './lib/enrichment';
 export default {
   fetch: app.fetch,
   async queue(batch: MessageBatch<EnrichmentMessage>, env: Bindings, ctx: ExecutionContext) {
-    await handleEnrichmentBatch(batch.messages, env);
+    // handleEnrichmentBatch manages per-message ack/retry internally.
+    // We must NOT throw here — a batch-level throw would retry ALL messages.
+    try {
+      await handleEnrichmentBatch(batch.messages, env);
+    } catch (err) {
+      // Unexpected error in the batch runner itself (not a per-message failure).
+      // Log safely and let Cloudflare Queue retry the batch.
+      console.error('[Queue] Unexpected error in enrichment batch runner:', String(err));
+      throw err;
+    }
   }
 };

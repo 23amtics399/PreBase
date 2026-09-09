@@ -79,6 +79,7 @@ queue = "prebase-enrichment-queue"
 max_batch_size = 100
 max_batch_timeout = 30
 max_retries = 3
+max_concurrency = 1
 dead_letter_queue = "prebase-enrichment-dlq"
 
 # --- IP rate limit identifier ---
