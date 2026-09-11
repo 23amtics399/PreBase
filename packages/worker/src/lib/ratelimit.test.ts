@@ -4,6 +4,8 @@ import {
   checkBotGlobalLimit,
   readGlobalAiUsage,
   incrementGlobalAiUsage,
+  atomicReserveGroqQuota,
+  readGroqQuotaLedger,
 } from './ratelimit';
 import type { D1Database } from '@cloudflare/workers-types';
 
@@ -14,10 +16,10 @@ import type { D1Database } from '@cloudflare/workers-types';
 function makeMockDb(returnedCount: number): { db: D1Database; decrementRun: jest.Mock } {
   const decrementRun = jest.fn().mockResolvedValue({ success: true });
 
-  // The RETURNING stmt returns { msg_count: returnedCount }
+  // The RETURNING stmt returns { msg_count: returnedCount, request_count: returnedCount }
   const insertStmt = {
     bind: jest.fn().mockReturnThis(),
-    first: jest.fn().mockResolvedValue({ msg_count: returnedCount }),
+    first: jest.fn().mockResolvedValue({ msg_count: returnedCount, request_count: returnedCount }),
     run:  jest.fn().mockResolvedValue({ success: true }),
   };
 
@@ -99,7 +101,7 @@ describe('checkBotIpLimit', () => {
 
 describe('checkBotGlobalLimit', () => {
   it('allows request within limit', async () => {
-    const { db } = makeMockDb(250);
+    const { db } = makeMockDb(100);
     const result = await checkBotGlobalLimit(db, 'bot_456', '2026-09-05', 500);
     expect(result.allowed).toBe(true);
   });
@@ -109,6 +111,59 @@ describe('checkBotGlobalLimit', () => {
     const result = await checkBotGlobalLimit(db, 'bot_456', '2026-09-05', 500);
     expect(result.allowed).toBe(false);
     expect((result as { allowed: false; reason: string }).reason).toBe('bot_global');
+    expect(decrementRun).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Groq Quota Ledger & atomicReserveGroqQuota
+// ---------------------------------------------------------------------------
+
+describe('Groq Quota Ledger (atomicReserveGroqQuota)', () => {
+  it('readGroqQuotaLedger reads row from groq_quota_ledger table', async () => {
+    const firstStmt = {
+      bind: jest.fn().mockReturnThis(),
+      first: jest.fn().mockResolvedValue({
+        request_count: 42,
+        est_input_tokens: 100,
+        est_output_tokens: 200,
+        act_input_tokens: 95,
+        act_output_tokens: 190,
+      }),
+    };
+    const db = { prepare: jest.fn().mockReturnValue(firstStmt) } as unknown as D1Database;
+
+    const row = await readGroqQuotaLedger(db, '2026-09-10', 'qwen/qwen3.8-27b', 'ingestion');
+    expect(row).toEqual({
+      request_count: 42,
+      est_input_tokens: 100,
+      est_output_tokens: 200,
+      act_input_tokens: 95,
+      act_output_tokens: 190,
+    });
+  });
+
+  it('readGroqQuotaLedger returns null when no row exists', async () => {
+    const firstStmt = { bind: jest.fn().mockReturnThis(), first: jest.fn().mockResolvedValue(null) };
+    const db = { prepare: jest.fn().mockReturnValue(firstStmt) } as unknown as D1Database;
+
+    const row = await readGroqQuotaLedger(db, '2026-09-10', 'qwen/qwen3.8-27b', 'ingestion');
+    expect(row).toBeNull();
+  });
+
+  it('atomicReserveGroqQuota allows when count is within budget limit', async () => {
+    const { db } = makeMockDb(100);
+    const res = await atomicReserveGroqQuota(db, '2026-09-10', 'qwen/qwen3.8-27b', 'ingestion', 650);
+    expect(res.allowed).toBe(true);
+    expect(res.count).toBe(100);
+  });
+
+  it('atomicReserveGroqQuota rejects and rolls back when use_case budget exceeded', async () => {
+    const { db, decrementRun } = makeMockDb(651);
+    const res = await atomicReserveGroqQuota(db, '2026-09-10', 'qwen/qwen3.8-27b', 'ingestion', 650);
+    expect(res.allowed).toBe(false);
+    expect(res.count).toBe(651);
+    expect(res.reason).toBe('uc_budget');
     expect(decrementRun).toHaveBeenCalledTimes(1);
   });
 });

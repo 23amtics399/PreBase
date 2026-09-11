@@ -224,3 +224,185 @@ export async function checkPreviewLimit(
   }
   return { allowed: true };
 }
+
+// ---------------------------------------------------------------------------
+// Groq Quota Ledger (Generic per-model, per-use-case budget & atomic ceiling)
+// ---------------------------------------------------------------------------
+
+/**
+ * Generic atomic quota reservation for any (model_id, use_case) combination.
+ *
+ * For models with a combined ceiling (ceilingBudget is defined), this also
+ * atomically reserves a slot in the sentinel '__model__' row BEFORE
+ * reserving the per-use-case slot. This guarantees:
+ *   SUM(request_count WHERE model_id=X) <= ceilingBudget
+ * at the instant any slot is authorized.
+ *
+ * SQLite serializes all writes. Two concurrent requests both race to
+ * increment the '__model__' sentinel row. One sees count <= ceiling (allowed),
+ * the other sees count > ceiling (denied, rolled back). No read-before-write
+ * race is possible.
+ *
+ * Budget values are PreBase application budgets — NOT provider quotas.
+ * Provider quotas are external and enforced by Groq (HTTP 429).
+ *
+ * @param db            - D1 database binding
+ * @param day           - 'YYYY-MM-DD' UTC
+ * @param modelId       - Groq model ID (e.g. 'qwen/qwen3.8-27b')
+ * @param useCase       - 'guard' | 'runtime' | 'ingestion'
+ * @param ucBudget      - Per-use-case PreBase application daily budget
+ * @param ceilingBudget - Combined model-level ceiling (omit if no shared ceiling)
+ */
+export async function atomicReserveGroqQuota(
+  db: D1Database,
+  day: string,
+  modelId: string,
+  useCase: string,
+  ucBudget: number,
+  ceilingBudget?: number
+): Promise<{ allowed: boolean; count: number; reason?: 'model_ceiling' | 'uc_budget' }> {
+  // Step 1: If ceilingBudget is provided, atomically increment the sentinel '__model__' row first
+  if (ceilingBudget !== undefined) {
+    const ceilingRow = await db
+      .prepare(
+        `INSERT INTO groq_quota_ledger (day, model_id, use_case, request_count)
+         VALUES (?, ?, '__model__', 1)
+         ON CONFLICT (day, model_id, use_case)
+         DO UPDATE SET request_count = request_count + 1
+         RETURNING request_count`
+      )
+      .bind(day, modelId)
+      .first<{ request_count: number }>();
+
+    const ceilingCount = ceilingRow?.request_count ?? 1;
+    if (ceilingCount > ceilingBudget) {
+      await db
+        .prepare(
+          `UPDATE groq_quota_ledger
+           SET request_count = MAX(0, request_count - 1)
+           WHERE day = ? AND model_id = ? AND use_case = '__model__'`
+        )
+        .bind(day, modelId)
+        .run();
+      return { allowed: false, count: ceilingCount, reason: 'model_ceiling' };
+    }
+  }
+
+  // Step 2: Atomically increment the use_case row
+  const ucRow = await db
+    .prepare(
+      `INSERT INTO groq_quota_ledger (day, model_id, use_case, request_count)
+       VALUES (?, ?, ?, 1)
+       ON CONFLICT (day, model_id, use_case)
+       DO UPDATE SET request_count = request_count + 1
+       RETURNING request_count`
+    )
+    .bind(day, modelId, useCase)
+    .first<{ request_count: number }>();
+
+  const ucCount = ucRow?.request_count ?? 1;
+  if (ucCount > ucBudget) {
+    // Rollback step 2 (use_case row)
+    await db
+      .prepare(
+        `UPDATE groq_quota_ledger
+         SET request_count = MAX(0, request_count - 1)
+         WHERE day = ? AND model_id = ? AND use_case = ?`
+      )
+      .bind(day, modelId, useCase)
+      .run();
+
+    // Rollback step 1 (sentinel row) if ceilingBudget was provided
+    if (ceilingBudget !== undefined) {
+      await db
+        .prepare(
+          `UPDATE groq_quota_ledger
+           SET request_count = MAX(0, request_count - 1)
+           WHERE day = ? AND model_id = ? AND use_case = '__model__'`
+        )
+        .bind(day, modelId)
+        .run();
+    }
+
+    return { allowed: false, count: ucCount, reason: 'uc_budget' };
+  }
+
+  return { allowed: true, count: ucCount };
+}
+
+/**
+ * Updates token usage counters in groq_quota_ledger after a successful call.
+ *
+ * LAYER 3 — OBSERVABILITY ONLY. Not used for enforcement decisions.
+ *
+ * est_* values are PreBase estimates from request parameters.
+ * act_* values are provider-reported from response.usage when present.
+ * Neither value is authoritative against Groq's provider-side TPD/TPM accounting.
+ *
+ * This update is best-effort. Failures are logged but do not affect the response.
+ */
+export async function updateGroqTokenLedger(
+  db: D1Database,
+  day: string,
+  modelId: string,
+  useCase: string,
+  tokens: {
+    estInput: number;
+    estOutput: number;
+    actInput?: number;
+    actOutput?: number;
+  }
+): Promise<void> {
+  // Never write token updates to the sentinel '__model__' row
+  if (useCase === '__model__') return;
+
+  await db
+    .prepare(
+      `INSERT INTO groq_quota_ledger
+         (day, model_id, use_case, request_count, est_input_tokens, est_output_tokens,
+          act_input_tokens, act_output_tokens)
+       VALUES (?, ?, ?, 0, ?, ?, ?, ?)
+       ON CONFLICT (day, model_id, use_case)
+       DO UPDATE SET
+         est_input_tokens  = est_input_tokens  + excluded.est_input_tokens,
+         est_output_tokens = est_output_tokens + excluded.est_output_tokens,
+         act_input_tokens  = act_input_tokens  + excluded.act_input_tokens,
+         act_output_tokens = act_output_tokens + excluded.act_output_tokens`
+    )
+    .bind(
+      day,
+      modelId,
+      useCase,
+      tokens.estInput || 0,
+      tokens.estOutput || 0,
+      tokens.actInput || 0,
+      tokens.actOutput || 0
+    )
+    .run();
+}
+
+/**
+ * Reads a row from groq_quota_ledger for a given day, model_id, and use_case.
+ * Primarily for testing and observability.
+ */
+export async function readGroqQuotaLedger(
+  db: D1Database,
+  day: string,
+  modelId: string,
+  useCase: string
+): Promise<{
+  request_count: number;
+  est_input_tokens: number;
+  est_output_tokens: number;
+  act_input_tokens: number;
+  act_output_tokens: number;
+} | null> {
+  return await db
+    .prepare(
+      `SELECT request_count, est_input_tokens, est_output_tokens, act_input_tokens, act_output_tokens
+       FROM groq_quota_ledger
+       WHERE day = ? AND model_id = ? AND use_case = ?`
+    )
+    .bind(day, modelId, useCase)
+    .first();
+}

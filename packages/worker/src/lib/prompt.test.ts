@@ -124,4 +124,46 @@ describe('Trust-Layered Prompt Architecture', () => {
     expect(fullPrompt).not.toContain('PASSWORD');
     expect(fullPrompt).not.toContain('SESSION_TOKEN');
   });
+
+  it('ANSWER_SYNTHESIS_POLICY is subordinate to T1 and positioned before UNTRUSTED_KNOWLEDGE', () => {
+    const messages = buildPrompt({
+      ownerInstructions: 'Custom bot instructions here.',
+      knowledge: 'Some KB text.',
+      userMessage: 'User question.',
+    });
+
+    const systemContent = messages[0].content;
+    const t0Index = systemContent.indexOf(PREBASE_CORE_POLICY);
+    const t1Index = systemContent.indexOf('<BOT_OWNER_INSTRUCTIONS>');
+    const t1EndIndex = systemContent.indexOf('</BOT_OWNER_INSTRUCTIONS>');
+    const synthesisIndex = systemContent.indexOf('SAFE INTERPRETATION RULES');
+    const t2Index = systemContent.indexOf('<UNTRUSTED_KNOWLEDGE>');
+
+    // T0 > T1 > Safe interpretation / Retrieved Knowledge > User Input
+    expect(t0Index).toBe(0);
+    expect(t1Index).toBeGreaterThan(t0Index);
+    expect(t1EndIndex).toBeGreaterThan(t1Index);
+    expect(synthesisIndex).toBeGreaterThan(t1EndIndex);
+    expect(t2Index).toBeGreaterThan(synthesisIndex);
+
+    // Explicit subordination and bounded rules
+    expect(systemContent).toContain('Subordinate to Bot Owner Instructions');
+    expect(systemContent).toContain('Subject to any restrictions in <BOT_OWNER_INSTRUCTIONS>');
+    expect(systemContent).toContain('Contact support is an escalation mechanism');
+    expect(systemContent).toContain('Directly Answerable:');
+    expect(systemContent).toContain('Do NOT add a support contact, uncertainty disclaimer, or escalation');
+    expect(systemContent).toContain('Semantic paraphrasing is allowed only when it does not introduce a new policy or fact');
+    expect(systemContent).toContain('Conditional Policy / User-Specific Status:');
+    expect(systemContent).toContain('state the policy and preserve every condition');
+    expect(systemContent).toContain('Never infer user-specific state');
+    expect(systemContent).toContain('Partially Supported / Specific Detail Missing:');
+    expect(systemContent).toContain('State the established general policy');
+    expect(systemContent).toContain('Explicitly state that the requested specific detail or entity is not confirmed or specified');
+    expect(systemContent).toContain('Ambiguous / Vague Context:');
+    expect(systemContent).toContain('Clearly identify the uncertainty or missing information');
+    expect(systemContent).toContain('Provide the configured trusted support contact');
+
+    // Must NOT contain unconstrained / vague "common sense" instructions
+    expect(systemContent.toLowerCase()).not.toContain('common sense');
+  });
 });

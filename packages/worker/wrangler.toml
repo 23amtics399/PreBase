@@ -62,10 +62,50 @@ PREBASE_MIN_BM25_SCORE   = "-0.5"
 # --- Input validation ---
 PREBASE_MAX_MESSAGE_LEN  = "2000"  # Max user message length in characters
 
-# --- Smart Enrichment ---
-PREBASE_GEMINI_MODEL = "gemini-3.6-flash"
-PREBASE_ENRICH_MAX_CHUNKS_PER_JOB = "25"
-PREBASE_ENRICH_MAX_RETRIES = "3"
+# --- Smart Enrichment (Phase 1: Groq replaces Gemini) ---
+# Model selected via benchmark (2026-09-10): 2/2 valid structured outputs,
+# 766ms latency, superior synonym generation vs Gemini.
+# Do NOT change without re-running the enrichment benchmark.
+PREBASE_INGESTION_MODEL = "qwen/qwen3.8-27b"
+PREBASE_ENRICH_MAX_RETRIES = "10"
+# Inter-chunk pacing delay in ms. 8500ms → ≤7 requests/min → stays under Groq free TPM limit.
+# Reduce only after verifying Groq TPM limits at console.groq.com.
+PREBASE_ENRICH_PACE_MS = "8500"
+# Explicit Groq API timeout in ms (default 10s). Guards against hanging connections in Queue.
+PREBASE_ENRICH_TIMEOUT_MS = "10000"
+
+# --- Groq quota management ---
+# PreBase combined application ceiling for all qwen/qwen3.8-27b use cases.
+# ingestion (650) + runtime (300) = 950. Leaves 50-req buffer below provider
+# reference RPD of 1,000 for qwen/qwen3.8-27b. This is OUR allocation, NOT Groq's quota.
+PREBASE_GROQ_QWEN_DAILY_CEILING = "950"
+PREBASE_GROQ_INGESTION_BUDGET   = "650"  # max enrichment calls/day
+PREBASE_GROQ_RUNTIME_BUDGET     = "300"  # max retrieval helper calls/day (total = 950 <= 1K provider limit)
+
+# Prompt Guard PreBase application circuit breaker.
+# Provider reference RPD for meta-llama/llama-prompt-guard-2-86m: 14,400 (independent pool).
+# This value is PreBase's internal budget, NOT Groq's limit.
+PREBASE_GROQ_GUARD_BUDGET = "5000"
+
+# Fallback model configuration — ALL DISABLED in this pass.
+# Prompt Guard 22M: do NOT enable without explicit security policy decision.
+# Benchmark confirmed false positives on queries containing "ignore"/"instructions".
+PREBASE_GUARD_FALLBACK_MODEL     = ""
+PREBASE_HELPER_FALLBACK_MODEL    = ""
+PREBASE_INGESTION_FALLBACK_MODEL = ""
+
+# Fallback budgets — only enforced when the corresponding model var is non-empty.
+PREBASE_GROQ_GUARD_FALLBACK_BUDGET     = "1000"
+PREBASE_GROQ_RUNTIME_FALLBACK_BUDGET   = "100"
+PREBASE_GROQ_INGESTION_FALLBACK_BUDGET = "200"
+
+# --- Prompt Guard (Phase 2: Pre-RAG security signal) ---
+# Model: meta-llama/llama-prompt-guard-2-86m via Groq
+# Note: Prompt Guard is an auxiliary routing signal, NOT the security authority.
+# PreBase immutable T0 system prompt remains the ultimate authority.
+PREBASE_GUARD_PROVIDER  = "groq"
+PREBASE_GUARD_MODEL     = "meta-llama/llama-prompt-guard-2-86m"
+PREBASE_GUARD_THRESHOLD = "0.75"
 
 # ---------------------------------------------------------------------------
 # Queues Configuration
@@ -76,9 +116,23 @@ binding = "ENRICHMENT_QUEUE"
 
 [[queues.consumers]]
 queue = "prebase-enrichment-queue"
-max_batch_size = 100
-max_batch_timeout = 30
-max_retries = 3
+# BATCH SIZE SAFETY CALCULATION (Pre-beta hardening update)
+# Cloudflare Queue consumer wall-time limit: 30s per invocation.
+#
+# Trailing pacing delay eliminated: pacing sleep occurs ONLY between calls,
+# never after the final chunk in a batch.
+#
+# Worst-case timeout timing for max_batch_size = 2:
+#   Chunk 1: Groq timeout (10,000ms) + pacing delay (8,500ms) + D1 (200ms) = 18,700ms
+#   Chunk 2: Groq timeout (10,000ms) + 0ms trailing delay     + D1 (200ms) = 10,200ms
+#   ─────────────────────────────────────────────────────────────────────────────
+#   Worst-Case Timeout Execution Time                                     = 28,900ms  ✅ (<30s limit)
+#
+# Typical timing for max_batch_size = 2 (median ~1000ms Groq):
+#   2 × 1000ms Groq + 1 × 8500ms pacing + 400ms D1 = 10,900ms ✅ (19.1s margin)
+max_batch_size = 2
+max_batch_timeout = 5
+max_retries = 10
 max_concurrency = 1
 dead_letter_queue = "prebase-enrichment-dlq"
 

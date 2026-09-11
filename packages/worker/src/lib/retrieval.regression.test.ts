@@ -27,6 +27,108 @@ import { FTS5Engine } from './retrieval';
 import { filterByRelevance } from './guard';
 import { chunkText } from './chunker';
 import type { D1Database } from '@cloudflare/workers-types';
+import Database from 'better-sqlite3';
+
+// ---------------------------------------------------------------------------
+// Helper: build a real in-memory SQLite database simulating D1 with FTS5 triggers
+// ---------------------------------------------------------------------------
+function createRealFts5Db(): D1Database {
+  const sqlite = new Database(':memory:');
+
+  sqlite.exec(`
+    CREATE TABLE kb_sources (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      bot_id TEXT NOT NULL,
+      filename TEXT NOT NULL,
+      enrichment_status TEXT DEFAULT 'not_requested' NOT NULL
+    );
+
+    CREATE TABLE kb_chunks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      bot_id TEXT NOT NULL,
+      source_id INTEGER NOT NULL REFERENCES kb_sources(id) ON DELETE CASCADE,
+      chunk_index INTEGER NOT NULL,
+      content TEXT NOT NULL
+    );
+
+    CREATE TABLE knowledge_enrichment (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chunk_id INTEGER NOT NULL UNIQUE REFERENCES kb_chunks(id) ON DELETE CASCADE,
+      questions TEXT NOT NULL,
+      aliases TEXT NOT NULL,
+      keywords TEXT NOT NULL,
+      topics TEXT NOT NULL,
+      entities TEXT NOT NULL,
+      negative_constraints TEXT NOT NULL,
+      model TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE VIRTUAL TABLE kb_fts USING fts5(
+      bot_id UNINDEXED,
+      source_id UNINDEXED,
+      chunk_index UNINDEXED,
+      content
+    );
+
+    CREATE TRIGGER kb_chunks_ai AFTER INSERT ON kb_chunks BEGIN
+      INSERT INTO kb_fts(rowid, bot_id, source_id, chunk_index, content)
+      VALUES (new.id, new.bot_id, new.source_id, new.chunk_index, new.content);
+    END;
+
+    CREATE TRIGGER kb_chunks_ad AFTER DELETE ON kb_chunks BEGIN
+      DELETE FROM kb_fts WHERE rowid = old.id;
+    END;
+
+    CREATE TRIGGER kb_chunks_au AFTER UPDATE ON kb_chunks BEGIN
+      UPDATE kb_fts
+      SET content = new.content ||
+          IFNULL(
+            (SELECT ' ' || questions || ' ' || aliases || ' ' || keywords || ' ' || topics || ' ' || entities || ' ' || negative_constraints
+             FROM knowledge_enrichment WHERE chunk_id = new.id),
+            ''
+          )
+      WHERE rowid = new.id;
+    END;
+
+    CREATE TRIGGER kb_enrich_ai AFTER INSERT ON knowledge_enrichment BEGIN
+      UPDATE kb_fts
+      SET content = (SELECT content FROM kb_chunks WHERE id = new.chunk_id) ||
+                    ' ' || new.questions || ' ' || new.aliases || ' ' || new.keywords ||
+                    ' ' || new.topics || ' ' || new.entities || ' ' || new.negative_constraints
+      WHERE rowid = new.chunk_id;
+    END;
+
+    CREATE TRIGGER kb_enrich_au AFTER UPDATE ON knowledge_enrichment BEGIN
+      UPDATE kb_fts
+      SET content = (SELECT content FROM kb_chunks WHERE id = new.chunk_id) ||
+                    ' ' || new.questions || ' ' || new.aliases || ' ' || new.keywords ||
+                    ' ' || new.topics || ' ' || new.entities || ' ' || new.negative_constraints
+      WHERE rowid = new.chunk_id;
+    END;
+
+    CREATE TRIGGER kb_enrich_ad AFTER DELETE ON knowledge_enrichment BEGIN
+      UPDATE kb_fts
+      SET content = (SELECT content FROM kb_chunks WHERE id = old.chunk_id)
+      WHERE rowid = old.chunk_id;
+    END;
+  `);
+
+  return {
+    prepare: (query: string) => {
+      const stmt = sqlite.prepare(query);
+      return {
+        bind: (...params: any[]) => ({
+          all: async () => ({ results: stmt.all(...params) }),
+          first: async () => stmt.get(...params),
+          run: async () => ({ success: true, meta: stmt.run(...params) }),
+        }),
+      };
+    },
+    _sqlite: sqlite,
+  } as unknown as D1Database;
+}
 
 // ---------------------------------------------------------------------------
 // Helper: build a mock D1 that returns a pre-set result set
@@ -154,49 +256,186 @@ describe('[retrieval-regression] 3. Paraphrase', () => {
 // ===========================================================================
 // 4. SYNONYM MISS — expected Phase 1 limitation
 // ===========================================================================
-describe('[retrieval-regression] 4. Synonym miss (expected Phase 1 limitation)', () => {
+describe('[retrieval-regression] 4. Synonym gap — bridged by Smart Enrichment (Phase 1)', () => {
   /**
    * "Do you deliver overseas?" vs corpus containing "ship internationally"
    *
-   * FTS5 is a keyword matcher — it cannot resolve vocabulary equivalences.
-   * "overseas" ≠ "internationally" in FTS5 token space.
-   * "deliver" ≠ "ship" in FTS5 token space.
+   * FTS5 is a keyword matcher — it cannot resolve vocabulary equivalences alone.
+   * However, Phase 1 Smart Enrichment uses Groq (qwen/qwen3.8-27b) to generate
+   * aliases including "overseas", "abroad", "outside the country" etc. into
+   * knowledge_enrichment, which is included in the FTS5 search corpus via the
+   * fts_enrichment virtual table.
    *
-   * Expected behavior:
+   * These unit tests operate on mock DBs so they test FTS5 safety invariants only.
+   * The actual synonym resolution via enrichment is verified in production tests.
+   *
+   * Expected behavior WITHOUT enrichment (mock empty corpus):
    *   - Retrieval safety:  PASS — no hallucination; deterministic fallback returned
    *   - Retrieval recall:  FAIL — correct answer exists in KB but was not retrieved
    *
-   * This is a documented limitation of Phase 1. Phase 2 would use hybrid retrieval
-   * (FTS5 + dense embeddings) to resolve such vocabulary gaps.
+   * Expected behavior WITH enrichment in production:
+   *   - "overseas" → matches alias in knowledge_enrichment for shipping chunk → PASS
+   *   - "pool" / "wet" → matches alias for warranty/liquid-damage chunk → PASS
+   *
+   * This section documents both the raw FTS5 limitation and the enrichment fix.
    */
   it('[SAFETY PASS] synonym query returns empty → correct deterministic fallback (not hallucination)', async () => {
     // Simulate: corpus has "ship internationally", query asks "deliver overseas"
-    // Both AND and OR passes return empty because neither "deliver" nor "overseas"
-    // appear in the corpus. The engine correctly returns [].
+    // Without enrichment, both AND and OR passes return empty.
+    // The engine correctly returns [].
     const db = emptyDb();
     const results = await engine.search(db, 'bot1', 'Do you deliver overseas?', 3600);
     expect(results).toHaveLength(0);
     // Callers receiving [] must use the deterministic fallback, not the AI
   });
 
-  it('[RECALL FAIL — known limitation] sanitize query for "overseas" does NOT match "internationally"', () => {
+  it('[FTS5-ONLY LIMITATION] sanitize query for "overseas" does NOT match "internationally" in raw FTS5', () => {
     const q = sanitizeFtsQuery('Do you deliver overseas?');
-    // "deliver AND overseas" — correct tokens, but corpus uses different vocabulary
+    // "deliver AND overseas" — correct tokens, but raw corpus uses different vocabulary.
+    // Phase 1 enrichment bridges this gap via knowledge_enrichment aliases.
     expect(q).toBe('deliver AND overseas');
-    // "overseas" is not equivalent to "internationally" in FTS5 token space
     expect(q).not.toContain('internationally');
     expect(q).not.toContain('ship');
-    // This is the Phase 1 semantic gap. The sanitizer does the right thing;
-    // the gap is in the corpus vocabulary, not the sanitizer.
   });
 
-  it('[RECALL FAIL — known limitation] sanitize query for "AI assistant" vs "chat assistant" — vocabulary gap', () => {
+  it('[FTS5-ONLY LIMITATION] sanitize query for "AI assistant" vs "chat assistant" — vocabulary gap', () => {
     const q = sanitizeFtsQuery('Is this an AI assistant?');
-    // "AI" and "assistant" are content tokens
-    // If corpus says "chat assistant" or "virtual helper", FTS5 would miss "AI"
+    // "AI" and "assistant" are content tokens — gap in corpus is bridged by enrichment in production.
     expect(q).toContain('assistant');
   });
+
+  it('[REAL FTS5 ASSERTION] enrichment metadata makes vocabulary (pool, water, wet, overseas, abroad) searchable against authoritative chunks', async () => {
+    const db = createRealFts5Db();
+    const sqlite = (db as any)._sqlite;
+
+    // Seed authoritative chunks without the target colloquial vocabulary:
+    // Chunk 1: Warranty policy (mentions "moisture immersion" and "liquid ingress", but NOT "pool", "water", or "wet")
+    sqlite.prepare(`
+      INSERT INTO kb_sources (id, bot_id, filename, enrichment_status)
+      VALUES (1, 'bot1', 'warranty_policy.txt', 'completed')
+    `).run();
+
+    const warrantyContent =
+      'Standard hardware warranty terms: All manufacturing defects are covered for 12 months. ' +
+      'Moisture immersion and liquid ingress void the coverage completely unless an extended protection plan was purchased at checkout.';
+
+    sqlite.prepare(`
+      INSERT INTO kb_chunks (id, bot_id, source_id, chunk_index, content)
+      VALUES (1, 'bot1', 1, 0, ?)
+    `).run(warrantyContent);
+
+    // Chunk 2: Shipping policy (mentions "international destinations", but NOT "overseas" or "abroad")
+    sqlite.prepare(`
+      INSERT INTO kb_sources (id, bot_id, filename, enrichment_status)
+      VALUES (2, 'bot1', 'shipping_guidelines.txt', 'completed')
+    `).run();
+
+    const shippingContent =
+      'International shipping logistics: We fulfill commercial orders to over 50 international destinations ' +
+      'with standardized customs clearance protocols.';
+
+    sqlite.prepare(`
+      INSERT INTO kb_chunks (id, bot_id, source_id, chunk_index, content)
+      VALUES (2, 'bot1', 2, 0, ?)
+    `).run(shippingContent);
+
+    // ── Phase A: Verify raw FTS5 FAILS to match before enrichment ──────────────
+    const prePool = await engine.search(db, 'bot1', 'pool', 3600);
+    expect(prePool).toHaveLength(0);
+
+    const preWater = await engine.search(db, 'bot1', 'water', 3600);
+    expect(preWater).toHaveLength(0);
+
+    const preWet = await engine.search(db, 'bot1', 'wet', 3600);
+    expect(preWet).toHaveLength(0);
+
+    const preOverseas = await engine.search(db, 'bot1', 'overseas', 3600);
+    expect(preOverseas).toHaveLength(0);
+
+    const preAbroad = await engine.search(db, 'bot1', 'abroad', 3600);
+    expect(preAbroad).toHaveLength(0);
+
+    // ── Phase B: Insert enrichment metadata with aliases / vocabulary bridging ─
+    // Chunk 1 gets "pool", "water", "wet" in its enrichment
+    sqlite.prepare(`
+      INSERT INTO knowledge_enrichment (
+        chunk_id, questions, aliases, keywords, topics, entities, negative_constraints, model, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      1,
+      JSON.stringify(['What happens if my phone falls in the pool?', 'Does warranty cover liquid exposure?']),
+      JSON.stringify(['pool', 'water', 'wet', 'submerged', 'toilet drop', 'puddle', 'spill']),
+      JSON.stringify(['warranty', 'liquid', 'immersion', 'hardware', 'protection']),
+      JSON.stringify(['warranty coverage', 'damage exceptions']),
+      JSON.stringify(['Hardware Support Team']),
+      JSON.stringify(['liquid damage not covered under standard plan']),
+      'qwen/qwen3.8-27b',
+      Date.now(),
+      Date.now()
+    );
+
+    // Chunk 2 gets "overseas", "abroad" in its enrichment
+    sqlite.prepare(`
+      INSERT INTO knowledge_enrichment (
+        chunk_id, questions, aliases, keywords, topics, entities, negative_constraints, model, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      2,
+      JSON.stringify(['Do you deliver packages overseas?', 'Can I place an order from abroad?']),
+      JSON.stringify(['overseas', 'abroad', 'foreign delivery', 'outside the country', 'global']),
+      JSON.stringify(['shipping', 'customs', 'international', 'fulfillment', 'destinations']),
+      JSON.stringify(['shipping policy', 'international fulfillment']),
+      JSON.stringify(['Logistics Dept']),
+      JSON.stringify(['no domestic-only restrictions']),
+      'qwen/qwen3.8-27b',
+      Date.now(),
+      Date.now()
+    );
+
+    // ── Phase C: Verify all 5 vocabulary terms now search successfully ─────────
+    // 1. "pool"
+    const poolRes = await engine.search(db, 'bot1', 'device fell in the pool', 3600);
+    expect(poolRes.length).toBeGreaterThan(0);
+    expect(poolRes[0].sourceFilename).toBe('warranty_policy.txt');
+    expect(poolRes[0].chunkIndex).toBe(0);
+    // CRITICAL: Source of truth is preserved — content is original text, NOT the enrichment string
+    expect(poolRes[0].content).toBe(warrantyContent);
+    expect(poolRes[0].content).not.toContain('pool');
+
+    // 2. "water"
+    const waterRes = await engine.search(db, 'bot1', 'is water damage covered?', 3600);
+    expect(waterRes.length).toBeGreaterThan(0);
+    expect(waterRes[0].sourceFilename).toBe('warranty_policy.txt');
+    expect(waterRes[0].content).toBe(warrantyContent);
+
+    // 3. "wet"
+    const wetRes = await engine.search(db, 'bot1', 'what if the device gets wet?', 3600);
+    expect(wetRes.length).toBeGreaterThan(0);
+    expect(wetRes[0].sourceFilename).toBe('warranty_policy.txt');
+    expect(wetRes[0].content).toBe(warrantyContent);
+
+    // 4. "overseas"
+    const overseasRes = await engine.search(db, 'bot1', 'do you deliver overseas?', 3600);
+    expect(overseasRes.length).toBeGreaterThan(0);
+    expect(overseasRes[0].sourceFilename).toBe('shipping_guidelines.txt');
+    expect(overseasRes[0].chunkIndex).toBe(0);
+    // Source of truth preserved
+    expect(overseasRes[0].content).toBe(shippingContent);
+    expect(overseasRes[0].content).not.toContain('overseas');
+
+    // 5. "abroad"
+    const abroadRes = await engine.search(db, 'bot1', 'can I order from abroad?', 3600);
+    expect(abroadRes.length).toBeGreaterThan(0);
+    expect(abroadRes[0].sourceFilename).toBe('shipping_guidelines.txt');
+    expect(abroadRes[0].content).toBe(shippingContent);
+
+    // ── Phase D: Verify cross-bot isolation with real FTS5 ─────────────────────
+    const bot2Res = await engine.search(db, 'bot2', 'deliver overseas', 3600);
+    expect(bot2Res).toHaveLength(0);
+  });
 });
+
+
 
 // ===========================================================================
 // 5. STOP-WORD FALSE POSITIVE PREVENTION

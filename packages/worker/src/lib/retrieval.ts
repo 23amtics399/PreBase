@@ -8,13 +8,20 @@ export interface RetrievalResult {
   chunkIndex: number;
 }
 
+export type RetrievalMode = 'and' | 'or_fallback' | 'none';
+
+export type SearchResult = RetrievalResult[] & {
+  results: RetrievalResult[];
+  mode: RetrievalMode;
+};
+
 export interface RetrievalEngine {
   search(
     db: D1Database,
     botId: string,
     query: string,
     charBudget: number
-  ): Promise<RetrievalResult[]>;
+  ): Promise<SearchResult>;
 }
 
 /**
@@ -52,31 +59,40 @@ export class FTS5Engine implements RetrievalEngine {
     db: D1Database,
     botId: string,
     query: string,
-    charBudget: number
-  ): Promise<RetrievalResult[]> {
+    charBudget: number,
+    allowOrFallback: boolean = true
+  ): Promise<SearchResult> {
     // Sanitize the raw query into a safe FTS5 MATCH expression.
     // sanitizeFtsQuery returns an AND-joined content-word query by default,
     // falling back to OR-joined if stop-word removal leaves nothing.
     // Returns null if no meaningful terms remain.
     const ftsQuery = sanitizeFtsQuery(query);
     if (ftsQuery === null) {
-      return [];
+      const selected: RetrievalResult[] = [];
+      return Object.assign(selected, { results: selected, mode: 'none' as const });
     }
+
+    let mode: RetrievalMode = 'none';
 
     // --- Primary pass: use the sanitized query as-is (AND-joined preferred) ---
     let rows = await runFts5Query(db, ftsQuery, botId);
-
-    // --- Fallback pass: if AND returned nothing, try OR on the same tokens ---
-    // This handles cases where the document uses only some of the query words.
-    // Example: "often AND passwords AND changed" may fail if the chunk reads
-    // "Passwords must be changed every 90 days" (missing "often").
-    if (rows.length === 0 && ftsQuery.includes(' AND ')) {
+    if (rows.length > 0) {
+      mode = 'and';
+    } else if (allowOrFallback && ftsQuery.includes(' AND ')) {
+      // --- Fallback pass: if AND returned nothing, try OR on the same tokens ---
+      // This handles cases where the document uses only some of the query words.
+      // Example: "often AND passwords AND changed" may fail if the chunk reads
+      // "Passwords must be changed every 90 days" (missing "often").
       const orFallback = ftsQuery.replace(/ AND /g, ' OR ');
       rows = await runFts5Query(db, orFallback, botId);
+      if (rows.length > 0) {
+        mode = 'or_fallback';
+      }
     }
 
     if (rows.length === 0) {
-      return [];
+      const selected: RetrievalResult[] = [];
+      return Object.assign(selected, { results: selected, mode: 'none' as const });
     }
 
     // Apply character budget: accumulate top-scoring chunks until exhausted.
@@ -96,6 +112,10 @@ export class FTS5Engine implements RetrievalEngine {
       usedChars += row.content.length;
     }
 
-    return selected;
+    if (selected.length === 0) {
+      return Object.assign(selected, { results: selected, mode: 'none' as const });
+    }
+
+    return Object.assign(selected, { results: selected, mode });
   }
 }

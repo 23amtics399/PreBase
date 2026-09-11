@@ -146,4 +146,73 @@ describe('FTS5Engine — two-pass retrieval', () => {
     expect(results.length).toBe(1);
     expect(results[0].content).toContain('Product A');
   });
+
+  describe('FTS5Engine execution mode reporting', () => {
+    it('reports mode: "and" when primary pass succeeds', async () => {
+      const engine = new FTS5Engine();
+      const mockDb = {
+        prepare: jest.fn().mockReturnValue({
+          bind: jest.fn().mockReturnValue({
+            all: jest.fn().mockResolvedValue({
+              results: [{ content: 'c', chunkIndex: 0, sourceFilename: 'f', score: -3 }],
+            }),
+          }),
+        }),
+      } as unknown as D1Database;
+
+      const results = await engine.search(mockDb, 'bot123', 'passwords changed', 500);
+      expect(results.mode).toBe('and');
+      expect(results.length).toBe(1);
+      expect(Array.isArray(results)).toBe(true);
+      expect(results.results).toBe(results);
+    });
+
+    it('reports mode: "or_fallback" when AND fails but OR succeeds', async () => {
+      const engine = new FTS5Engine();
+      let callCount = 0;
+      const mockDb = {
+        prepare: jest.fn().mockReturnValue({
+          bind: jest.fn().mockReturnValue({
+            all: jest.fn().mockImplementation(() =>
+              Promise.resolve({
+                results: callCount++ === 0 ? [] : [{ content: 'c', chunkIndex: 0, sourceFilename: 'f', score: -2 }],
+              })
+            ),
+          }),
+        }),
+      } as unknown as D1Database;
+
+      const results = await engine.search(mockDb, 'bot123', 'often passwords changed', 500);
+      expect(results.mode).toBe('or_fallback');
+      expect(results.length).toBe(1);
+    });
+
+    it('reports mode: "none" when both passes return 0 rows', async () => {
+      const engine = new FTS5Engine();
+      const mockDb = {
+        prepare: jest.fn().mockReturnValue({
+          bind: jest.fn().mockReturnValue({
+            all: jest.fn().mockResolvedValue({ results: [] }),
+          }),
+        }),
+      } as unknown as D1Database;
+
+      const results = await engine.search(mockDb, 'bot123', 'often passwords changed', 500);
+      expect(results.mode).toBe('none');
+      expect(results.length).toBe(0);
+    });
+
+    it('reports mode: "none" when query is empty or punctuation', async () => {
+      const engine = new FTS5Engine();
+      const mockDb = { prepare: jest.fn() } as unknown as D1Database;
+
+      const emptyRes = await engine.search(mockDb, 'bot123', '   ', 500);
+      expect(emptyRes.mode).toBe('none');
+      expect(emptyRes.length).toBe(0);
+
+      const punctRes = await engine.search(mockDb, 'bot123', '??!!$$', 500);
+      expect(punctRes.mode).toBe('none');
+      expect(punctRes.length).toBe(0);
+    });
+  });
 });

@@ -364,7 +364,7 @@ function buildKnowledgeSection(bot, initialSources, pageContainer) {
   const enrichText = document.createElement('div');
   enrichText.innerHTML = `
     <strong style="display:block; margin-bottom: 4px;">Enable Smart Enrichment</strong>
-    <p style="margin: 0 0 8px 0; font-size: 0.9rem; color: var(--neutral-700);">Use AI to analyze this document and improve how your bot finds relevant information. This may send the uploaded document content to Google's Gemini API for processing.</p>
+    <p style="margin: 0 0 8px 0; font-size: 0.9rem; color: var(--neutral-700);">Use AI to analyze this document and improve how your bot finds relevant information. This sends the uploaded document content to a third-party AI service (Groq API) for processing.</p>
     <p style="margin: 0 0 8px 0; font-size: 0.9rem; color: var(--neutral-700);">Smart Enrichment generates search metadata such as possible questions, keywords, aliases, topics, and entities. Your original document remains the authoritative source used to generate answers.</p>
   `;
 
@@ -378,7 +378,7 @@ function buildKnowledgeSection(bot, initialSources, pageContainer) {
   enrichPrivacy.style.borderTop = '1px solid var(--neutral-200)';
   enrichPrivacy.style.fontSize = '0.85rem';
   enrichPrivacy.style.color = 'var(--neutral-600)';
-  enrichPrivacy.innerHTML = `<strong>Privacy notice:</strong> When Smart Enrichment is enabled, the uploaded document content is sent to Google's Gemini API for processing. Do not enable this feature for passwords, credentials, personal data, medical information, financial information, confidential documents, or anything you are not authorized to send to a third-party AI service.`;
+  enrichPrivacy.innerHTML = `<strong>Privacy notice:</strong> When Smart Enrichment is enabled, the uploaded document content is sent to a third-party AI service (Groq API) for processing. Do not enable this feature for passwords, credentials, personal data, medical information, financial information, confidential documents, or anything you are not authorized to send to a third-party AI service.`;
   enrichmentSection.appendChild(enrichPrivacy);
 
   body.appendChild(enrichmentSection);
@@ -496,6 +496,8 @@ function buildKnowledgeSection(bot, initialSources, pageContainer) {
       enrichStatusText = ' · Smart enrichment: Processing…';
     } else if (src.enrichment_status === 'completed') {
       enrichStatusText = ' · Smart enrichment: Complete';
+    } else if (src.enrichment_status === 'partial') {
+      enrichStatusText = ' · Smart enrichment: Partially complete (some chunks failed)';
     } else if (src.enrichment_status === 'failed') {
       enrichStatusText = ' · Smart enrichment: Failed. Your original knowledge is still available for normal search.';
     }
