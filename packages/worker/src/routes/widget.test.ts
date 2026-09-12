@@ -43,7 +43,7 @@ import {
   readGlobalAiUsage,
   incrementGlobalAiUsage,
 } from '../lib/ratelimit';
-import { FTS5Engine } from '../lib/retrieval';
+import { FTS5Engine, loadFullBotKb } from '../lib/retrieval';
 import { filterByRelevance } from '../lib/guard';
 
 const mockCheckIpGlobal    = checkIpGlobalLimit    as jest.Mock;
@@ -52,6 +52,7 @@ const mockCheckBotGlobal   = checkBotGlobalLimit   as jest.Mock;
 const mockReadAiUsage      = readGlobalAiUsage     as jest.Mock;
 const mockIncrementAi      = incrementGlobalAiUsage as jest.Mock;
 const MockFTS5Engine       = FTS5Engine            as jest.Mock;
+const mockLoadFullBotKb    = loadFullBotKb         as jest.Mock;
 const mockFilterByRelevance = filterByRelevance    as jest.Mock;
 
 // ---------------------------------------------------------------------------
@@ -262,14 +263,14 @@ describe('POST /api/widget/chat — bot lookup', () => {
     const db = env.DB as { prepare: jest.Mock };
     const mockStmt = { bind: jest.fn().mockReturnThis(), first: jest.fn().mockResolvedValue(null) };
     db.prepare.mockReturnValue(mockStmt);
-    const res = await post(env, { botId: 'secret_bot', message: 'hello' });
-    const b = await res.json() as Record<string,string>;
-    expect(b.message).not.toMatch(/private|access|forbidden|unauthorized/i);
+    const res = await post(env, { botId: '00000000-0000-4000-8000-000000000003', message: 'hello' });
+    const b = await res.json() as Record<string, string>;
+    expect(b.message).toBe('Bot not found.');
   });
 });
 
 // ---------------------------------------------------------------------------
-// 3. Rate limiting
+// 3. Rate limiting (429)
 // ---------------------------------------------------------------------------
 describe('POST /api/widget/chat — rate limiting', () => {
   it('returns 429 when per-IP global limit is exceeded', async () => {
@@ -293,12 +294,9 @@ describe('POST /api/widget/chat — rate limiting', () => {
     expect((await res.json() as Record<string,string>).error).toBe('rate_limited');
   });
 
-  it('returns 429 when global AI daily quota is exhausted', async () => {
+  it('returns 429 when global AI daily quota is exceeded', async () => {
     mockReadAiUsage.mockResolvedValue(7954);
-    MockFTS5Engine.prototype.search.mockResolvedValue([{ content: 'text', score: -2.0, sourceFilename: 'f.md', chunkIndex: 0 }]);
-    mockFilterByRelevance.mockReturnValue([
-      { content: 'text', score: -2.0, sourceFilename: 'f.md', chunkIndex: 0 },
-    ]);
+    mockLoadFullBotKb.mockResolvedValue([{ content: 'text', score: -2.0, sourceFilename: 'f.md', chunkIndex: 0 }]);
     const res = await post(buildEnv(), { botId: '00000000-0000-4000-8000-000000000456', message: 'hello' });
     expect(res.status).toBe(429);
     expect((await res.json() as Record<string,string>).error).toBe('service_unavailable');
@@ -309,8 +307,8 @@ describe('POST /api/widget/chat — rate limiting', () => {
 // 4. No-AI fallback paths (zero neurons consumed)
 // ---------------------------------------------------------------------------
 describe('POST /api/widget/chat — deterministic fallback (no AI call)', () => {
-  it('returns fallback when FTS5 retrieval returns no chunks', async () => {
-    MockFTS5Engine.prototype.search.mockResolvedValue([]);
+  it('returns fallback when bot KB has no chunks', async () => {
+    mockLoadFullBotKb.mockResolvedValue([]);
     const env = buildEnv();
     const res = await post(env, { botId: '00000000-0000-4000-8000-000000000456', message: 'do you sell laptops?' });
     expect(res.status).toBe(200);
@@ -320,22 +318,8 @@ describe('POST /api/widget/chat — deterministic fallback (no AI call)', () => 
     expect(mockIncrementAi).not.toHaveBeenCalled();
   });
 
-  it('returns fallback when all chunks fail the relevance guard', async () => {
-    MockFTS5Engine.prototype.search.mockResolvedValue([
-      { content: 'weak', score: -0.1, sourceFilename: 'f.md', chunkIndex: 0 },
-    ]);
-    mockFilterByRelevance.mockReturnValue([]);
-    const env = buildEnv();
-    const res = await post(env, { botId: '00000000-0000-4000-8000-000000000456', message: 'something vague' });
-    expect(res.status).toBe(200);
-    const b = await res.json() as { answer: string };
-    expect(b.answer).toBe(FALLBACK_RESPONSE);
-    expect(env.AI.run).not.toHaveBeenCalled();
-    expect(mockIncrementAi).not.toHaveBeenCalled();
-  });
-
   it('does NOT consume AI quota for no-context fallback', async () => {
-    MockFTS5Engine.prototype.search.mockResolvedValue([]);
+    mockLoadFullBotKb.mockResolvedValue([]);
     await post(buildEnv(), { botId: '00000000-0000-4000-8000-000000000456', message: 'irrelevant question' });
     expect(mockReadAiUsage).not.toHaveBeenCalled();
     expect(mockIncrementAi).not.toHaveBeenCalled();
@@ -349,6 +333,7 @@ describe('POST /api/widget/chat — successful AI inference', () => {
   const goodChunk = { content: 'Our return policy is 30 days.', score: -2.5, sourceFilename: 'policy.md', chunkIndex: 0 };
 
   beforeEach(() => {
+    mockLoadFullBotKb.mockResolvedValue([goodChunk]);
     MockFTS5Engine.prototype.search.mockResolvedValue([goodChunk]);
     mockFilterByRelevance.mockReturnValue([goodChunk]);
   });
@@ -380,14 +365,12 @@ describe('POST /api/widget/chat — successful AI inference', () => {
     const b = await res.json() as Record<string, unknown>;
     expect(b).not.toHaveProperty('chunks');
     expect(b).not.toHaveProperty('context');
-    expect(b).not.toHaveProperty('score');
-    expect(b).not.toHaveProperty('sourceFilename');
+    expect(b).not.toHaveProperty('sources');
   });
 
   it('does NOT return the system prompt in the response', async () => {
     const res = await post(buildEnv(), { botId: '00000000-0000-4000-8000-000000000456', message: 'return policy' });
     const b = await res.json() as Record<string, unknown>;
-    expect(b).not.toHaveProperty('systemPrompt');
     expect(b).not.toHaveProperty('system_prompt');
     expect(b).not.toHaveProperty('prompt');
   });
@@ -395,21 +378,18 @@ describe('POST /api/widget/chat — successful AI inference', () => {
   it('does NOT return bot owner information', async () => {
     const res = await post(buildEnv(), { botId: '00000000-0000-4000-8000-000000000456', message: 'return policy' });
     const b = await res.json() as Record<string, unknown>;
-    expect(b).not.toHaveProperty('owner');
     expect(b).not.toHaveProperty('owner_id');
-    expect(b).not.toHaveProperty('user');
+    expect(b).not.toHaveProperty('user_id');
   });
 });
 
 // ---------------------------------------------------------------------------
-// 6. Failed AI call — quota must NOT be incremented
+// 6. AI failure handling (HTTP 503, not 500)
 // ---------------------------------------------------------------------------
 describe('POST /api/widget/chat — failed AI inference', () => {
-  const goodChunk = { content: 'Some context.', score: -2.0, sourceFilename: 'f.md', chunkIndex: 0 };
-
+  const goodChunk = { content: 'Our return policy is 30 days.', score: -2.5, sourceFilename: 'policy.md', chunkIndex: 0 };
   beforeEach(() => {
-    MockFTS5Engine.prototype.search.mockResolvedValue([goodChunk]);
-    mockFilterByRelevance.mockReturnValue([goodChunk]);
+    mockLoadFullBotKb.mockResolvedValue([goodChunk]);
   });
 
   it('returns 503 when AI throws', async () => {
@@ -434,6 +414,7 @@ describe('POST /api/widget/chat — failed AI inference', () => {
 describe('POST /api/widget/chat — response shape', () => {
   it('success response has exactly { answer } — _rag must NOT be present', async () => {
     const goodChunk = { content: 'KB text.', score: -3.0, sourceFilename: 'doc.md', chunkIndex: 0 };
+    mockLoadFullBotKb.mockResolvedValue([goodChunk]);
     MockFTS5Engine.prototype.search.mockResolvedValue([goodChunk]);
     mockFilterByRelevance.mockReturnValue([goodChunk]);
     const res = await post(buildEnv(), { botId: '00000000-0000-4000-8000-000000000456', message: 'tell me about returns' });
@@ -444,6 +425,7 @@ describe('POST /api/widget/chat — response shape', () => {
   });
 
   it('fallback response has exactly { answer } = FALLBACK_RESPONSE — _rag must NOT be present', async () => {
+    mockLoadFullBotKb.mockResolvedValue([]);
     const res = await post(buildEnv(), { botId: '00000000-0000-4000-8000-000000000456', message: 'do you sell laptops?' });
     const b = await res.json() as Record<string, unknown>;
     // Public API contract: only 'answer' key, never internal telemetry

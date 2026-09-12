@@ -251,9 +251,8 @@ describe('Bots API', () => {
     });
 
     it('should reject uploads exceeding limits', async () => {
-      const env = buildEnv({ PREBASE_MAX_KB_SIZE: '10', PREBASE_MAX_UPLOAD_SIZE: '5000' });
+      const env = buildEnv({ PREBASE_MAX_KB_FILE_BYTES: '10' });
       env.mockStmt.first.mockResolvedValueOnce({ id: '00000000-0000-4000-8000-000000000001' }); // Verify ownership
-      env.mockStmt.all.mockResolvedValueOnce({ results: [{ byte_size: 5 }] }); // Current byte_size
 
       const app = buildApp('user_123');
       const formData = new FormData();
@@ -272,6 +271,180 @@ describe('Bots API', () => {
       expect(res.status).toBe(413);
       const data = await res.json() as any;
       expect(data.error).toBe('payload_too_large');
+    });
+  });
+
+  describe('KB Input Constraints & Instruction Limits (New Architecture)', () => {
+    const botId = '00000000-0000-4000-8000-000000000001';
+
+    it('enforces maximum 2,000 characters for bot instructions on creation', async () => {
+      const env = buildEnv({ PREBASE_MAX_INSTRUCTIONS_CHARS: '2000' });
+      // Valid instructions (<= 2,000 chars)
+      const validRes = await post(env, '/api/bots', {
+        name: 'Test Bot',
+        system_prompt: 'A'.repeat(2000)
+      });
+      expect(validRes.status).toBe(201);
+
+      // Over 2,000 chars rejected
+      const invalidRes = await post(env, '/api/bots', {
+        name: 'Too Long Bot',
+        system_prompt: 'A'.repeat(2001)
+      });
+      expect(invalidRes.status).toBe(400);
+      const data = await invalidRes.json() as any;
+      expect(data.error).toBe('invalid_system_prompt');
+      expect(data.message).toContain('2000');
+    });
+
+    it('enforces maximum 2,000 characters for bot instructions on update (PATCH)', async () => {
+      const env = buildEnv({ PREBASE_MAX_INSTRUCTIONS_CHARS: '2000' });
+      env.mockStmt.run.mockResolvedValueOnce({ success: true, meta: { changes: 1 } });
+
+      const validPatch = await patch(env, `/api/bots/${botId}`, {
+        system_prompt: 'B'.repeat(2000)
+      });
+      expect(validPatch.status).toBe(200);
+
+      const invalidPatch = await patch(env, `/api/bots/${botId}`, {
+        system_prompt: 'B'.repeat(2001)
+      });
+      expect(invalidPatch.status).toBe(400);
+      const data = await invalidPatch.json() as any;
+      expect(data.error).toBe('invalid_system_prompt');
+    });
+
+    it('enforces maximum 10 KB per uploaded file', async () => {
+      const env = buildEnv({ PREBASE_MAX_KB_FILE_BYTES: '10240' });
+      env.mockStmt.first.mockResolvedValue({ id: botId });
+      env.mockStmt.all.mockResolvedValue({ results: [] }); // 0 sources currently
+
+      const app = buildApp('user_123');
+
+      // 10240 bytes (10 KB) -> allowed
+      const validFile = new File(['A'.repeat(10240)], 'valid.txt', { type: 'text/plain' });
+      const validForm = new FormData();
+      validForm.append('file', validFile);
+      const req1 = new Request(`http://localhost/api/bots/${botId}/knowledge`, {
+        method: 'POST',
+        body: validForm,
+      });
+      const res1 = await app.fetch(req1, env, { waitUntil: jest.fn(), passThroughOnException: jest.fn() } as any);
+      expect(res1.status).toBe(201);
+
+      // 10241 bytes -> rejected
+      const invalidFile = new File(['A'.repeat(10241)], 'toolarge.txt', { type: 'text/plain' });
+      const invalidForm = new FormData();
+      invalidForm.append('file', invalidFile);
+      const req2 = new Request(`http://localhost/api/bots/${botId}/knowledge`, {
+        method: 'POST',
+        body: invalidForm,
+      });
+      const res2 = await app.fetch(req2, env, { waitUntil: jest.fn(), passThroughOnException: jest.fn() } as any);
+      expect(res2.status).toBe(413);
+      const data2 = await res2.json() as any;
+      expect(data2.error).toBe('payload_too_large');
+    });
+
+    it('enforces maximum 2,000 characters per direct-text knowledge source', async () => {
+      const env = buildEnv({ PREBASE_MAX_KB_TEXT_CHARS: '2000' });
+      env.mockStmt.first
+        .mockResolvedValueOnce({ id: botId }) // ownership check
+        .mockResolvedValueOnce({ id: 101 });   // RETURNING id
+      env.mockStmt.all.mockResolvedValueOnce({ results: [] }); // 0 sources
+
+      // 2000 characters -> allowed
+      const validRes = await post(env, `/api/bots/${botId}/knowledge/text`, {
+        text: 'C'.repeat(2000),
+        label: 'Policy'
+      });
+      expect(validRes.status).toBe(201);
+
+      // 2001 characters -> rejected
+      env.mockStmt.first.mockResolvedValueOnce({ id: botId });
+      const invalidRes = await post(env, `/api/bots/${botId}/knowledge/text`, {
+        text: 'C'.repeat(2001),
+        label: 'Policy'
+      });
+      expect(invalidRes.status).toBe(400);
+      const data = await invalidRes.json() as any;
+      expect(data.error).toBe('text_too_long');
+    });
+
+    it('allows 2 files (max 2 slots)', async () => {
+      const env = buildEnv({ PREBASE_MAX_SOURCES_PER_BOT: '2' });
+      env.mockStmt.first
+        .mockResolvedValueOnce({ id: botId }) // ownership check
+        .mockResolvedValueOnce({ id: 201 });   // RETURNING id
+      // When 1 source exists, 2nd file upload succeeds
+      env.mockStmt.all.mockResolvedValueOnce({ results: [{ id: 1 }] });
+
+      const app = buildApp('user_123');
+      const file = new File(['This is the second knowledge base document with sufficient text length.'], 'second.txt', { type: 'text/plain' });
+      const formData = new FormData();
+      formData.append('file', file);
+      const req = new Request(`http://localhost/api/bots/${botId}/knowledge`, {
+        method: 'POST',
+        body: formData,
+      });
+      const res = await app.fetch(req, env, { waitUntil: jest.fn(), passThroughOnException: jest.fn() } as any);
+      expect(res.status).toBe(201);
+    });
+
+    it('allows 1 direct-text source + 1 file', async () => {
+      const env = buildEnv({ PREBASE_MAX_SOURCES_PER_BOT: '2' });
+      env.mockStmt.first
+        .mockResolvedValueOnce({ id: botId }) // ownership check
+        .mockResolvedValueOnce({ id: 202 });   // RETURNING id
+      // 1 existing file source, adding direct-text source -> allowed
+      env.mockStmt.all.mockResolvedValueOnce({ results: [{ id: 1 }] });
+
+      const res = await post(env, `/api/bots/${botId}/knowledge/text`, {
+        text: 'This is direct text knowledge content with sufficient text length to be indexed.',
+        label: 'FAQ'
+      });
+      expect(res.status).toBe(201);
+    });
+
+    it('rejects a 3rd knowledge source when 2 already exist (too_many_sources)', async () => {
+      const env = buildEnv({ PREBASE_MAX_SOURCES_PER_BOT: '2' });
+      env.mockStmt.first.mockResolvedValue({ id: botId });
+      // 2 sources already exist
+      env.mockStmt.all.mockResolvedValue({ results: [{ id: 1 }, { id: 2 }] });
+
+      // Attempt 3rd via file
+      const app = buildApp('user_123');
+      const file = new File(['Third source content'], 'third.txt', { type: 'text/plain' });
+      const formData = new FormData();
+      formData.append('file', file);
+      const reqFile = new Request(`http://localhost/api/bots/${botId}/knowledge`, {
+        method: 'POST',
+        body: formData,
+      });
+      const resFile = await app.fetch(reqFile, env, { waitUntil: jest.fn(), passThroughOnException: jest.fn() } as any);
+      expect(resFile.status).toBe(409);
+      const dataFile = await resFile.json() as any;
+      expect(dataFile.error).toBe('too_many_sources');
+
+      // Attempt 3rd via direct-text
+      const resText = await post(env, `/api/bots/${botId}/knowledge/text`, {
+        text: 'Third text source.',
+        label: 'Extra'
+      });
+      expect(resText.status).toBe(409);
+      const dataText = await resText.json() as any;
+      expect(dataText.error).toBe('too_many_sources');
+    });
+
+    it('confirms instructions do not consume a knowledge-source slot', async () => {
+      const env = buildEnv({ PREBASE_MAX_SOURCES_PER_BOT: '2' });
+      // Even if 2 knowledge sources exist, updating bot instructions still succeeds
+      env.mockStmt.run.mockResolvedValueOnce({ success: true, meta: { changes: 1 } });
+
+      const patchRes = await patch(env, `/api/bots/${botId}`, {
+        system_prompt: 'Updated instructions that do not touch knowledge slots.'
+      });
+      expect(patchRes.status).toBe(200);
     });
   });
 

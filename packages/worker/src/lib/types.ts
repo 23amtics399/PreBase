@@ -32,9 +32,14 @@ export type Bindings = {
   // HMAC secret for IP hashing — set via `wrangler secret put` in production
   RATE_LIMIT_SECRET: string;
 
-  // Bot Knowledge Limits
+  // Bot Knowledge Limits (whole-KB architecture)
+  PREBASE_MAX_SOURCES_PER_BOT?: string;    // max source slots per bot, default: "2"
+  PREBASE_MAX_KB_FILE_BYTES?: string;       // max bytes per uploaded file, default: "10240" (10 KB)
+  PREBASE_MAX_KB_TEXT_CHARS?: string;       // max chars for direct text input, default: "2000"
+  PREBASE_MAX_INSTRUCTIONS_CHARS?: string;  // max chars for bot owner instructions, default: "2000"
+
+  // Legacy — kept for optional overrides; not used on primary path
   PREBASE_MAX_KB_SIZE?: string;
-  PREBASE_MAX_SOURCES_PER_BOT?: string;
   PREBASE_MAX_UPLOAD_SIZE?: string;
 
   // Preview Limits

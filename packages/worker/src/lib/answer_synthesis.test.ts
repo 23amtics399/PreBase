@@ -1,13 +1,24 @@
 import { executeRagPipeline, FALLBACK_RESPONSE, BLOCKED_GUARD_RESPONSE } from './rag';
 import { PREBASE_CORE_POLICY } from './corePrompt';
 import type { D1Database } from '@cloudflare/workers-types';
-import type { SearchResult } from './retrieval';
+import { loadFullBotKb } from './retrieval';
 
 // Mock ratelimit so quota doesn't block
 jest.mock('./ratelimit', () => ({
   readGlobalAiUsage: jest.fn().mockResolvedValue(0),
   incrementGlobalAiUsage: jest.fn().mockResolvedValue(undefined),
 }));
+
+// Mock retrieval for loadFullBotKb
+jest.mock('./retrieval', () => {
+  const original = jest.requireActual('./retrieval');
+  return {
+    ...original,
+    loadFullBotKb: jest.fn(),
+  };
+});
+
+const mockLoadFullBotKb = loadFullBotKb as jest.Mock;
 
 // Real FAQ chunks from prebase-test-faq.txt
 const CHUNK_WARRANTY = 'The warranty covers manufacturing defects for 1 year from the date of purchase. The warranty does not cover accidental damage, liquid damage, or normal cosmetic wear. To make a warranty claim, contact support@teststore.example with your order number and photos of the defect.';
@@ -19,6 +30,8 @@ describe('Answer-Synthesis Policy & Telemetry Invariant Suite', () => {
 
   beforeEach(() => {
     mockRun = jest.fn().mockResolvedValue({ response: 'Model synthesized answer' });
+    mockLoadFullBotKb.mockReset();
+    mockLoadFullBotKb.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -26,7 +39,13 @@ describe('Answer-Synthesis Policy & Telemetry Invariant Suite', () => {
   });
 
   const createMockEnv = () => ({
-    DB: {} as unknown as D1Database,
+    DB: {
+      prepare: jest.fn().mockReturnValue({
+        bind: jest.fn().mockReturnThis(),
+        all: jest.fn().mockResolvedValue({ results: [] }),
+        first: jest.fn().mockResolvedValue(null),
+      }),
+    } as unknown as D1Database,
     AI: { run: mockRun },
     PREBASE_AI_MODEL: '@cf/ibm/granite-4.0-h-micro',
     PREBASE_CHAR_BUDGET: '3600',
@@ -52,15 +71,9 @@ Your strict instructions:
 
   describe('Hierarchy & Subordination Invariant', () => {
     it('enforces T0 > T1 > Safe Interpretation Policy > Retrieved Knowledge > User Input', async () => {
-      const retrievalModule = await import('./retrieval');
-      const searchResult: SearchResult = Object.assign(
-        [{ content: CHUNK_WARRANTY, score: -5.0, sourceFilename: 'prebase-test-faq.txt', chunkIndex: 4 }],
-        {
-          results: [{ content: CHUNK_WARRANTY, score: -5.0, sourceFilename: 'prebase-test-faq.txt', chunkIndex: 4 }],
-          mode: 'and' as const,
-        }
-      );
-      jest.spyOn(retrievalModule.FTS5Engine.prototype, 'search').mockResolvedValueOnce(searchResult);
+      mockLoadFullBotKb.mockResolvedValueOnce([
+        { content: CHUNK_WARRANTY, score: 0, sourceFilename: 'prebase-test-faq.txt', chunkIndex: 4 }
+      ]);
 
       const env = createMockEnv();
       await executeRagPipeline(
@@ -77,10 +90,10 @@ Your strict instructions:
       const userContent = messages[1].content;
 
       const t0Idx = systemContent.indexOf(PREBASE_CORE_POLICY);
-      const t1Idx = systemContent.indexOf('<BOT_OWNER_INSTRUCTIONS>');
+      const t1Idx = systemContent.indexOf('<BOT_OWNER_INSTRUCTIONS');
       const t1EndIdx = systemContent.indexOf('</BOT_OWNER_INSTRUCTIONS>');
       const policyIdx = systemContent.indexOf('SAFE INTERPRETATION RULES');
-      const t2Idx = systemContent.indexOf('<UNTRUSTED_KNOWLEDGE>');
+      const t2Idx = systemContent.indexOf('<BOT_KNOWLEDGE_BASE');
 
       // Strict ordering: T0 > T1 > Policy > Knowledge
       expect(t0Idx).toBe(0);
@@ -101,15 +114,9 @@ Your strict instructions:
 
   describe('Regression Requirement: Helper/Enrichment Metadata NEVER reaches Granite', () => {
     it('Granite receives ONLY original kb_chunks.content; no enrichment/helper tokens or metadata', async () => {
-      const retrievalModule = await import('./retrieval');
-      const searchResult: SearchResult = Object.assign(
-        [{ content: CHUNK_WARRANTY, score: -6.2, sourceFilename: 'prebase-test-faq.txt', chunkIndex: 4 }],
-        {
-          results: [{ content: CHUNK_WARRANTY, score: -6.2, sourceFilename: 'prebase-test-faq.txt', chunkIndex: 4 }],
-          mode: 'and' as const,
-        }
-      );
-      jest.spyOn(retrievalModule.FTS5Engine.prototype, 'search').mockResolvedValueOnce(searchResult);
+      mockLoadFullBotKb.mockResolvedValueOnce([
+        { content: CHUNK_WARRANTY, score: 0, sourceFilename: 'prebase-test-faq.txt', chunkIndex: 4 }
+      ]);
 
       const env = createMockEnv();
       await executeRagPipeline(
@@ -131,7 +138,6 @@ Your strict instructions:
       expect(systemContent).not.toContain('sourceFilename');
       expect(systemContent).not.toContain('prebase-test-faq.txt');
       expect(systemContent).not.toContain('score');
-      expect(systemContent).not.toContain('-6.2');
       expect(systemContent).not.toContain('rowid');
       expect(systemContent).not.toContain('alternative_queries');
       expect(systemContent).not.toContain('suggested_keywords');
@@ -140,16 +146,10 @@ Your strict instructions:
     });
 
     it('For Germany query with confirmed destination chunk, does NOT invent synthetic statements in prompt', async () => {
-      const retrievalModule = await import('./retrieval');
       const CHUNK_SHIPPING_CONFIRMED = 'International shipping is available to selected countries. Supported destinations include India, Australia, and Germany.';
-      const searchResult: SearchResult = Object.assign(
-        [{ content: CHUNK_SHIPPING_CONFIRMED, score: -3.5, sourceFilename: 'prebase-test-faq.txt', chunkIndex: 8 }],
-        {
-          results: [{ content: CHUNK_SHIPPING_CONFIRMED, score: -3.5, sourceFilename: 'prebase-test-faq.txt', chunkIndex: 8 }],
-          mode: 'or_fallback' as const,
-        }
-      );
-      jest.spyOn(retrievalModule.FTS5Engine.prototype, 'search').mockResolvedValueOnce(searchResult);
+      mockLoadFullBotKb.mockResolvedValueOnce([
+        { content: CHUNK_SHIPPING_CONFIRMED, score: 0, sourceFilename: 'prebase-test-faq.txt', chunkIndex: 8 }
+      ]);
 
       const env = createMockEnv();
       await executeRagPipeline(
@@ -167,8 +167,8 @@ Your strict instructions:
       expect(systemContent).toContain(CHUNK_SHIPPING_CONFIRMED);
 
       // Granite's knowledge section MUST NOT contain fabricated claims
-      const kbStart = systemContent.indexOf('<UNTRUSTED_KNOWLEDGE>');
-      const kbEnd = systemContent.indexOf('</UNTRUSTED_KNOWLEDGE>');
+      const kbStart = systemContent.indexOf('<BOT_KNOWLEDGE_BASE');
+      const kbEnd = systemContent.indexOf('</BOT_KNOWLEDGE_BASE>');
       const kbSection = systemContent.substring(kbStart, kbEnd);
 
       expect(kbSection).not.toContain('Germany is not supported');
@@ -176,16 +176,10 @@ Your strict instructions:
   });
 
   describe('Canonical Query A: Water/Liquid Damage (Semantic Paraphrase)', () => {
-    it('retrieves warranty chunk with mode "and" and supplies bounded interpretation rule', async () => {
-      const retrievalModule = await import('./retrieval');
-      const searchResult: SearchResult = Object.assign(
-        [{ content: CHUNK_WARRANTY, score: -5.4, sourceFilename: 'prebase-test-faq.txt', chunkIndex: 4 }],
-        {
-          results: [{ content: CHUNK_WARRANTY, score: -5.4, sourceFilename: 'prebase-test-faq.txt', chunkIndex: 4 }],
-          mode: 'and' as const,
-        }
-      );
-      jest.spyOn(retrievalModule.FTS5Engine.prototype, 'search').mockResolvedValueOnce(searchResult);
+    it('loads full bot KB and supplies bounded interpretation rule', async () => {
+      mockLoadFullBotKb.mockResolvedValueOnce([
+        { content: CHUNK_WARRANTY, score: 0, sourceFilename: 'prebase-test-faq.txt', chunkIndex: 4 },
+      ]);
 
       const env = createMockEnv();
       const res = await executeRagPipeline(
@@ -197,7 +191,8 @@ Your strict instructions:
       );
 
       expect(res.status).toBe(200);
-      expect(res._rag.retrievalMode).toBe('and');
+      expect(res._rag.retrievalMode).toBe('full_kb');
+      expect(res._rag.helperStatus).toBe('skipped_full_kb');
       expect(res._rag.aiCalled).toBe(true);
       expect(res._rag.passedGuardCount).toBe(1);
 
@@ -222,16 +217,10 @@ Your strict instructions:
   });
 
   describe('Canonical Query B: Conditional Cancellation (State & Conditions Preserved)', () => {
-    it('retrieves order cancellation chunk and provides non-inference rule', async () => {
-      const retrievalModule = await import('./retrieval');
-      const searchResult: SearchResult = Object.assign(
-        [{ content: CHUNK_ORDERS, score: -6.1, sourceFilename: 'prebase-test-faq.txt', chunkIndex: 2 }],
-        {
-          results: [{ content: CHUNK_ORDERS, score: -6.1, sourceFilename: 'prebase-test-faq.txt', chunkIndex: 2 }],
-          mode: 'and' as const,
-        }
-      );
-      jest.spyOn(retrievalModule.FTS5Engine.prototype, 'search').mockResolvedValueOnce(searchResult);
+    it('intercepts with policy grounding or loads full bot KB and provides non-inference rule', async () => {
+      mockLoadFullBotKb.mockResolvedValueOnce([
+        { content: CHUNK_ORDERS, score: 0, sourceFilename: 'prebase-test-faq.txt', chunkIndex: 2 },
+      ]);
 
       const env = createMockEnv();
       const res = await executeRagPipeline(
@@ -243,20 +232,20 @@ Your strict instructions:
       );
 
       expect(res.status).toBe(200);
-      expect(res._rag.retrievalMode).toBe('and');
-      expect(res._rag.aiCalled).toBe(true);
-
-      const systemContent = mockRun.mock.calls[0][1].messages[0].content;
-      expect(systemContent).toContain('preserve every condition');
-      expect(systemContent).toContain('Never infer user-specific state');
-      expect(systemContent).toContain(CHUNK_ORDERS);
+      expect(res._rag.retrievalMode).toBe('full_kb');
+      expect(res._rag.helperStatus).toBe('skipped_full_kb');
+      expect(res._rag.ragStatus).toBe('policy_intercepted');
+      expect(res._rag.policyGroundingStatus).toBe('conditional_met');
+      expect(res._rag.aiCalled).toBe(false);
+      expect(res.answer).toMatch(/2[- ]hours?/i);
+      expect(res.answer).toMatch(/processing/i);
     });
 
     it('deterministic acceptance criteria for query B (conditional, condition preserved, MAY include support for status)', () => {
       const validateQueryBAnswer = (answer: string) => {
         const lower = answer.toLowerCase();
         // 1. Must preserve the 2-hour window
-        expect(lower).toMatch(/2 hours/i);
+        expect(lower).toMatch(/2[- ]hours?/i);
         // 2. Must preserve the processing condition
         expect(lower).toMatch(/processing/i);
         // 3. Must not claim definitely cancellable without condition
@@ -274,16 +263,10 @@ Your strict instructions:
   });
 
   describe('Canonical Query C: Germany (Partially Supported / Ambiguous)', () => {
-    it('retrieves international shipping chunk via OR fallback, identifies unconfirmed entity Germany, intercepts Granite, and returns bounded response', async () => {
-      const retrievalModule = await import('./retrieval');
-      const searchResult: SearchResult = Object.assign(
-        [{ content: CHUNK_SHIPPING, score: -3.2, sourceFilename: 'prebase-test-faq.txt', chunkIndex: 8 }],
-        {
-          results: [{ content: CHUNK_SHIPPING, score: -3.2, sourceFilename: 'prebase-test-faq.txt', chunkIndex: 8 }],
-          mode: 'or_fallback' as const,
-        }
-      );
-      jest.spyOn(retrievalModule.FTS5Engine.prototype, 'search').mockResolvedValueOnce(searchResult);
+    it('loads full bot KB, identifies unconfirmed entity Germany, intercepts Granite, and returns bounded response', async () => {
+      mockLoadFullBotKb.mockResolvedValueOnce([
+        { content: CHUNK_SHIPPING, score: 0, sourceFilename: 'prebase-test-faq.txt', chunkIndex: 8 },
+      ]);
 
       const env = createMockEnv();
       const res = await executeRagPipeline(
@@ -295,7 +278,8 @@ Your strict instructions:
       );
 
       expect(res.status).toBe(200);
-      expect(res._rag.retrievalMode).toBe('or_fallback');
+      expect(res._rag.retrievalMode).toBe('full_kb');
+      expect(res._rag.helperStatus).toBe('skipped_full_kb');
       expect(res._rag.aiCalled).toBe(false);
       expect(res._rag.ragStatus).toBe('entity_intercepted');
       expect(res._rag.entityGroundingState).toBe('absent');
@@ -336,15 +320,9 @@ Your strict instructions:
     });
 
     it('strips leading prompt echo if model repeats user question at start of answer', async () => {
-      const retrievalModule = await import('./retrieval');
-      const searchResult: SearchResult = Object.assign(
-        [{ content: CHUNK_SHIPPING, score: -3.2, sourceFilename: 'prebase-test-faq.txt', chunkIndex: 8 }],
-        {
-          results: [{ content: CHUNK_SHIPPING, score: -3.2, sourceFilename: 'prebase-test-faq.txt', chunkIndex: 8 }],
-          mode: 'and' as const,
-        }
-      );
-      jest.spyOn(retrievalModule.FTS5Engine.prototype, 'search').mockResolvedValueOnce(searchResult);
+      mockLoadFullBotKb.mockResolvedValueOnce([
+        { content: CHUNK_SHIPPING, score: 0, sourceFilename: 'prebase-test-faq.txt', chunkIndex: 8 },
+      ]);
 
       mockRun.mockResolvedValueOnce({
         response: 'Do you ship internationally?\nInternational shipping is available to selected countries and usually takes 10 to 15 business days.',
@@ -367,16 +345,10 @@ Your strict instructions:
   });
 
   describe('Canonical Query D: General International Shipping', () => {
-    it('retrieves shipping chunk with mode "and" and answers from KB', async () => {
-      const retrievalModule = await import('./retrieval');
-      const searchResult: SearchResult = Object.assign(
-        [{ content: CHUNK_SHIPPING, score: -5.8, sourceFilename: 'prebase-test-faq.txt', chunkIndex: 8 }],
-        {
-          results: [{ content: CHUNK_SHIPPING, score: -5.8, sourceFilename: 'prebase-test-faq.txt', chunkIndex: 8 }],
-          mode: 'and' as const,
-        }
-      );
-      jest.spyOn(retrievalModule.FTS5Engine.prototype, 'search').mockResolvedValueOnce(searchResult);
+    it('loads full bot KB and answers from KB', async () => {
+      mockLoadFullBotKb.mockResolvedValueOnce([
+        { content: CHUNK_SHIPPING, score: 0, sourceFilename: 'prebase-test-faq.txt', chunkIndex: 8 },
+      ]);
 
       const env = createMockEnv();
       const res = await executeRagPipeline(
@@ -388,7 +360,8 @@ Your strict instructions:
       );
 
       expect(res.status).toBe(200);
-      expect(res._rag.retrievalMode).toBe('and');
+      expect(res._rag.retrievalMode).toBe('full_kb');
+      expect(res._rag.helperStatus).toBe('skipped_full_kb');
       expect(res._rag.aiCalled).toBe(true);
 
       const systemContent = mockRun.mock.calls[0][1].messages[0].content;
@@ -482,16 +455,7 @@ Your strict instructions:
 
   describe('Canonical Query E: Completely Unrelated (France)', () => {
     it('returns deterministic PreBase fallback without invoking Granite', async () => {
-      const retrievalModule = await import('./retrieval');
-      const emptyResult: SearchResult = Object.assign(
-        [],
-        {
-          results: [],
-          mode: 'none' as const,
-        }
-      );
-      // Both first pass and any second pass return empty
-      jest.spyOn(retrievalModule.FTS5Engine.prototype, 'search').mockResolvedValue(emptyResult);
+      mockLoadFullBotKb.mockResolvedValueOnce([]);
 
       const env = createMockEnv();
       const res = await executeRagPipeline(
@@ -505,7 +469,8 @@ Your strict instructions:
       expect(res.status).toBe(200);
       expect(res.answer).toBe(FALLBACK_RESPONSE);
       expect(res._rag.aiCalled).toBe(false);
-      expect(res._rag.retrievalMode).toBe('none');
+      expect(res._rag.retrievalMode).toBe('full_kb');
+      expect(res._rag.helperStatus).toBe('skipped_full_kb');
       expect(mockRun).not.toHaveBeenCalled();
     });
   });

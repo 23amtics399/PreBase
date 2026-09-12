@@ -73,6 +73,21 @@ const GENERIC_CATEGORY_TERMS = new Set([
   'savings',
   'checking',
 
+  // Payment methods & instruments
+  'cards',
+  'card',
+  'credit card',
+  'credit cards',
+  'debit card',
+  'debit cards',
+  'payment',
+  'payments',
+  'payment method',
+  'payment methods',
+  'payment option',
+  'payment options',
+  'payment methods and cards',
+
   // Healthcare & telehealth
   'health',
   'insurance',
@@ -174,7 +189,7 @@ function cleanEntityString(raw: string): string {
   s = s.replace(/^(?:the|a|an|to|in|for|from|with|specifically to|specifically in|specifically for|specifically)\s+/i, '');
 
   // Strip trailing generic category words ONLY if preceded by other words
-  s = s.replace(/(?<=\S\s+)(?:compliance reports?|reports?|compliance|health insurance|insurance|destination|destinations|country|countries|provider|providers|plan|plans|tier)$/i, '');
+  s = s.replace(/(?<=\S\s+)(?:cards?|payments?|methods?|options?|accounts?|compliance reports?|reports?|compliance|health insurance|insurance|destination|destinations|country|countries|provider|providers|plan|plans|tier)$/i, '');
 
   return s.trim();
 }
@@ -235,16 +250,6 @@ export function extractCandidateEntities(message: string): CandidateEntity[] {
     const lower = cleaned.toLowerCase();
     if (cleaned && cleaned.length >= 2 && !GENERIC_CATEGORY_TERMS.has(lower) && !PRONOUNS.has(lower)) {
       candidates.push({ name: cleaned, normalized: lower, sourcePattern: 'user_presupposition' });
-    }
-  }
-
-  // Pattern 6: Geographic / entity target ("What is the capital of France?", "capital of Germany")
-  const p6 = /\b(?:capital|city|country|state|province)\s+of\s+([a-zA-Z0-9\s.-]+?)(?:\?|$|\.|\bfor\b|\bfrom\b|\bwith\b|\bin\b)/gi;
-  while ((m = p6.exec(normalizedMsg)) !== null) {
-    const cleaned = cleanEntityString(m[1]);
-    const lower = cleaned.toLowerCase();
-    if (cleaned && cleaned.length >= 2 && !GENERIC_CATEGORY_TERMS.has(lower) && !PRONOUNS.has(lower)) {
-      candidates.push({ name: cleaned, normalized: lower, sourcePattern: 'geography_target' });
     }
   }
 
@@ -345,6 +350,26 @@ export function findEntityInChunks(
       return { found: true, matchingChunk: c };
     }
   }
+
+  // Conservative morphological plural/singular check
+  let variant: string | null = null;
+  if (/ies$/i.test(cleaned)) {
+    variant = cleaned.replace(/ies$/i, 'y');
+  } else if (/es$/i.test(cleaned) && cleaned.length > 4) {
+    variant = cleaned.replace(/es$/i, '');
+  } else if (/s$/i.test(cleaned) && !/ss$/i.test(cleaned) && cleaned.length > 3) {
+    variant = cleaned.replace(/s$/i, '');
+  }
+
+  if (variant) {
+    const variantRegex = new RegExp(`\\b${escapeRegex(variant)}\\b`, 'i');
+    for (const c of chunks) {
+      if (variantRegex.test(c.content)) {
+        return { found: true, matchingChunk: c };
+      }
+    }
+  }
+
   return { found: false };
 }
 
@@ -367,10 +392,12 @@ export function evaluateEntityGroundingState(
   }
 
   const cleaned = cleanEntityString(entity);
-  const wordRegex = new RegExp(`\\b${escapeRegex(cleaned)}\\b`, 'i');
+  const variantRegex = /s$/i.test(cleaned) && !/ss$/i.test(cleaned)
+    ? new RegExp(`\\b(?:${escapeRegex(cleaned)}|${escapeRegex(cleaned.replace(/s$/i, ''))})\\b`, 'i')
+    : new RegExp(`\\b(?:${escapeRegex(cleaned)}|${escapeRegex(cleaned)}s)\\b`, 'i');
 
-  // Filter chunks that actually contain the entity
-  const entityChunks = allChunks.filter(c => wordRegex.test(c.content));
+  // Filter chunks that actually contain the entity or its conservative variant
+  const entityChunks = allChunks.filter(c => variantRegex.test(c.content));
   if (entityChunks.length === 0) {
     return { state: 'absent' };
   }
@@ -385,6 +412,7 @@ export function evaluateEntityGroundingState(
   const positivePatterns = [
     new RegExp(`\\b(?:in-network with|accept|accepted|accepts|participating with|covered by|providers include|destinations include|supported(?: destinations| countries| regions| platforms)? include|we ship to|ships to|(?<!(?:not|never|neither|nor|cannot|can't|don't|do not)\\s+)ship to|available in|available to|available as|supports|(?:plans?|tiers?|platforms?|features?)\\s+support|includes|include|provides|provide|offers|offer)\\b(?:(?!\\b(?:not|never|neither|nor|except|excluding|unavailable|unsupported|prohibited)\\b)(?![.?!](?:\\s+|$))[^\n])*?\\b${escapeRegex(cleaned)}\\b`, 'i'),
     new RegExp(`\\b${escapeRegex(cleaned)}\\b(?:(?!\\b(?:not|never|neither|nor|except|excluding|unavailable|unsupported|prohibited)\\b)(?![.?!](?:\\s+|$))[^\n])*?\\b(?:is supported|are supported|is included|are included|is eligible|is in-network|are in-network|is covered|are covered|is available|are available|is accepted|are accepted)\\b`, 'i'),
+    new RegExp(`\\b(?:accept|accepted|accepts|support|supported|supports|include|includes|offer|offers|available|payment methods?)\\b[^\n.?!]*?:?\\s*(?:\\n\\s*[-*•]\\s*[^\n]+)*?\\n\\s*[-*•]\\s*${escapeRegex(cleaned)}\\b`, 'i'),
   ];
 
   // Regex patterns for explicit exclusion / prohibition
@@ -502,6 +530,107 @@ export function resolveTrustedSupportContact(
 }
 
 /**
+ * Extracts an authoritative governing policy sentence from retrieved chunks
+ * that is demonstrably and semantically relevant to both the candidate entity
+ * and the user's requested operation.
+ *
+ * Rejects questions, section headers, exclusion lists, and unrelated content.
+ * Returns null if no governing policy sentence meets both criteria.
+ */
+export function extractGoverningPolicySentence(
+  content: string,
+  entity: string,
+  userMessage?: string
+): string | null {
+  if (!content || !content.trim()) return null;
+
+  // Reject pure exclusion sections immediately
+  if (/^\s*#*\s*(?:what is not covered|not covered|exclusions?|exceptions?|things we don't cover)\b/i.test(content)) {
+    return null;
+  }
+
+  // Split content into paragraphs first to preserve coherent multi-sentence policy blocks
+  const paragraphs = content.split(/\r?\n\s*\r?\n/);
+  const cleanCandidates: string[] = [];
+
+  for (const para of paragraphs) {
+    const lines = para.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    const contentLines: string[] = [];
+
+    for (let line of lines) {
+      // Strip markdown formatting: leading headers, blockquotes, bullets, and numbering
+      const cleanLine = line.replace(/^[\s#>\-*•\d.)]+/g, '').trim().replace(/[*_~`]/g, '').trim();
+
+      if (cleanLine.length < 15) continue;
+
+      // Reject questions (ends with '?' or starts with question interrogatives)
+      if (cleanLine.endsWith('?') || /^(?:is|can|do|does|how|what|where|when|why|who|q:)\b/i.test(cleanLine)) {
+        continue;
+      }
+
+      // Reject structural headings or metadata labels
+      if (/^(?:information not covered|frequently asked questions|about us|contact details|payment methods|support and security|test cases|privacy|orders|returns|shipping|payment|warranty)\b/i.test(cleanLine)) {
+        continue;
+      }
+
+      // Reject negative exclusion lists or disclaimers
+      if (/\b(?:does not specify|not specify|does not cover|not covered|not claim|never ask|not require)\b/i.test(cleanLine)) {
+        continue;
+      }
+
+      // Reject noun-phrase fragments lacking a predicate/verb
+      if (!/\b(?:is|are|was|were|be|been|have|has|had|do|does|did|will|would|can|could|may|might|must|should|takes?|applies|apply|offers?|includes?|ships?|accepts?|requires?|delivers?|provides?)\b/i.test(cleanLine)) {
+        continue;
+      }
+
+      contentLines.push(cleanLine);
+    }
+
+    if (contentLines.length === 0) continue;
+
+    let block = contentLines.join(' ');
+    if (!/[.]$/.test(block)) {
+      block = block + '.';
+    }
+
+    if (block.length >= 20) {
+      cleanCandidates.push(block);
+    }
+  }
+
+  if (cleanCandidates.length === 0) return null;
+
+  const combinedContext = `${entity} ${userMessage ?? ''}`.toLowerCase();
+
+  // Domain triggers
+  const isShipping = /\b(?:ship|shipping|delivery|deliver|delivers|internationally|international|destination|destinations|countries|country|germany|france|japan|argentina|brazil|uk|australia)\b/i.test(combinedContext);
+  const isPayment = /\b(?:pay|payment|payments|methods?|accept|accepts|cards?|rupay|visa|mastercard|wire|transfers?|bank|banking)\b/i.test(combinedContext);
+  const isHealth = /\b(?:prescribe|prescription|telehealth|virtual|doctor|physician|in-network|insurance|coverage|adderall|ambien|ozempic|cigna|aetna)\b/i.test(combinedContext);
+  const isDiscount = /\b(?:discount|discounts|student)\b/i.test(combinedContext);
+  const isReturn = /\b(?:return|returns|refund|refunds|cancellation|cancellations)\b/i.test(combinedContext);
+
+  for (const cand of cleanCandidates) {
+    if (isShipping && /\b(?:ship|shipping|delivery|deliver|delivers|destinations?|countries|international(?:ly)?|transit)\b/i.test(cand)) {
+      return cand;
+    }
+    if (isPayment && /\b(?:pay|payment|payments|methods|accept|accepts|accepted|cards?|currencies|bank)\b/i.test(cand)) {
+      return cand;
+    }
+    if (isHealth && /\b(?:prescribe|prescriptions?|telehealth|virtual|doctor|physician|in-network|insurance|coverage)\b/i.test(cand)) {
+      return cand;
+    }
+    if (isDiscount && /\b(?:discounts?|coupons?|promo(?:tion)?s?)\b/i.test(cand)) {
+      return cand;
+    }
+    if (isReturn && /\b(?:returns?|refunds?|cancellations?|resalable|packaging)\b/i.test(cand)) {
+      return cand;
+    }
+  }
+
+  return null;
+}
+
+/**
  * Builds a deterministic, bounded response for unconfirmed, conflicting, or absent entities
  * without calling Granite, completely eliminating hallucinated support.
  */
@@ -509,7 +638,8 @@ export function buildBoundedUnconfirmedResponse(
   categoryChunkContent: string,
   entity: string,
   state: EntityEvidenceState,
-  supportContact?: string
+  supportContact?: string,
+  userMessage?: string
 ): string {
   const contactSuffix = supportContact
     ? `For confirmation, please contact ${supportContact}.`
@@ -528,15 +658,19 @@ export function buildBoundedUnconfirmedResponse(
   }
 
   // Default: absent
-  // Extract key governing sentence from category chunk if available
-  const sentences = categoryChunkContent
-    .split(/(?<=[.?!])\s+/)
-    .map(s => s.trim())
-    .filter(s => s.length > 15);
+  const governingSentence = extractGoverningPolicySentence(categoryChunkContent, entity, userMessage);
 
-  const generalRule = sentences.length > 0 ? sentences[0] : 'We provide services according to established policies.';
+  if (governingSentence) {
+    return `${governingSentence} However, the knowledge base does not specify whether ${entity} is included or supported. ${contactSuffix}`;
+  }
 
-  return `${generalRule} However, the knowledge base does not specify whether ${entity} is included or supported. ${contactSuffix}`;
+  // Pure non-mention fallback without quoting unrelated chunks
+  const cleanEntity = entity.trim();
+  const formattedEntity = /^(?:a|an|the)\s+/i.test(cleanEntity) || /s$/i.test(cleanEntity)
+    ? cleanEntity
+    : `a ${cleanEntity}`;
+
+  return `The knowledge base does not mention ${formattedEntity}, and does not specify whether it is included or supported. ${contactSuffix}`;
 }
 
 /**

@@ -51,8 +51,9 @@ bots.post('/', async (c) => {
   }
 
   const prompt = typeof system_prompt === 'string' ? system_prompt.trim() : '';
-  if (prompt.length > 5000) {
-    return c.json({ error: 'invalid_system_prompt', message: 'System prompt must not exceed 5000 characters.' }, 400);
+  const maxInstructionsChars = Math.max(1, parseInt(c.env.PREBASE_MAX_INSTRUCTIONS_CHARS ?? '2000', 10));
+  if (prompt.length > maxInstructionsChars) {
+    return c.json({ error: 'invalid_system_prompt', message: `Bot owner instructions must not exceed ${maxInstructionsChars} characters.` }, 400);
   }
 
   const id = crypto.randomUUID();
@@ -155,8 +156,9 @@ bots.patch('/:id', async (c) => {
     if (typeof system_prompt !== 'string') {
       return c.json({ error: 'invalid_system_prompt', message: 'System prompt must be a string.' }, 400);
     }
-    if (system_prompt.length > 5000) {
-      return c.json({ error: 'invalid_system_prompt', message: 'System prompt must not exceed 5000 characters.' }, 400);
+    const maxInstructionsChars = Math.max(1, parseInt(c.env.PREBASE_MAX_INSTRUCTIONS_CHARS ?? '2000', 10));
+    if (system_prompt.length > maxInstructionsChars) {
+      return c.json({ error: 'invalid_system_prompt', message: `Bot owner instructions must not exceed ${maxInstructionsChars} characters.` }, 400);
     }
     updates.push('system_prompt = ?');
     params.push(system_prompt.trim());
@@ -278,13 +280,14 @@ bots.get('/:id/knowledge', async (c) => {
   if (!bot) return c.json({ error: 'not_found', message: 'Bot not found.' }, 404);
 
   const { results } = await c.env.DB.prepare(
-    `SELECT id, filename, byte_size, chunk_count, uploaded_at, enrichment_status
+    `SELECT id, filename, byte_size, chunk_count, uploaded_at, enrichment_status, source_type
      FROM kb_sources
      WHERE bot_id = ?
      ORDER BY uploaded_at DESC`
   ).bind(botId).all();
 
-  return c.json({ sources: results });
+  const maxSources = Math.max(1, parseInt(c.env.PREBASE_MAX_SOURCES_PER_BOT ?? '2', 10));
+  return c.json({ sources: results, slots_used: results.length, slots_total: maxSources });
 });
 
 // ---------------------------------------------------------------------------
@@ -325,25 +328,25 @@ bots.post('/:id/knowledge', async (c) => {
     return c.json({ error: 'unsupported_type', message: 'Only .txt and .md files are supported.' }, 400);
   }
 
-  // Validate single upload limit (3 MB)
-  const maxUploadSize = parseInt(c.env.PREBASE_MAX_UPLOAD_SIZE ?? '3145728', 10);
-  if (file.size > maxUploadSize) {
-    return c.json({ error: 'payload_too_large', message: 'File exceeds maximum upload size.' }, 413);
+  // Validate single file size limit (new architecture: 10 KB per file)
+  const maxFileSizeBytes = Math.max(1, parseInt(c.env.PREBASE_MAX_KB_FILE_BYTES ?? '10240', 10));
+  if (file.size > maxFileSizeBytes) {
+    return c.json({
+      error: 'payload_too_large',
+      message: `File exceeds the maximum size of ${Math.round(maxFileSizeBytes / 1024)} KB per knowledge source.`
+    }, 413);
   }
 
-  // Calculate current bot size and limits
-  const maxTotalSize = parseInt(c.env.PREBASE_MAX_KB_SIZE ?? '5242880', 10);
-  const maxSources = parseInt(c.env.PREBASE_MAX_SOURCES_PER_BOT ?? '10', 10);
+  // Check slot count against the 2-slot limit
+  const maxSources = Math.max(1, parseInt(c.env.PREBASE_MAX_SOURCES_PER_BOT ?? '2', 10));
 
   const { results: existingSources } = await c.env.DB.prepare(
-    'SELECT byte_size FROM kb_sources WHERE bot_id = ?'
-  ).bind(botId).all<{ byte_size: number }>();
+    'SELECT id FROM kb_sources WHERE bot_id = ?'
+  ).bind(botId).all<{ id: number }>();
 
   if (existingSources.length >= maxSources) {
-    return c.json({ error: 'too_many_sources', message: 'Maximum knowledge sources reached.' }, 409);
+    return c.json({ error: 'too_many_sources', message: `Maximum of ${maxSources} knowledge source slots reached. Delete an existing source to upload a new one.` }, 409);
   }
-
-  let totalSize = existingSources.reduce((sum, s) => sum + s.byte_size, 0);
 
   // Decode text
   let text: string;
@@ -354,9 +357,6 @@ bots.post('/:id/knowledge', async (c) => {
   }
 
   const textBytes = new TextEncoder().encode(text).byteLength;
-  if (totalSize + textBytes > maxTotalSize) {
-    return c.json({ error: 'payload_too_large', message: 'Upload would exceed maximum bot knowledge size.' }, 413);
-  }
 
   // Chunk text
   const chunks = chunkText(text);
@@ -371,8 +371,8 @@ bots.post('/:id/knowledge', async (c) => {
   const enrichmentOptIn = formData['enrichment'] === 'true' || formData['enrichment'] === '1';
 
   const sourceResult = await c.env.DB.prepare(
-    `INSERT INTO kb_sources (bot_id, filename, byte_size, chunk_count, uploaded_at, enrichment_status)
-     VALUES (?, ?, ?, ?, ?, ?)
+    `INSERT INTO kb_sources (bot_id, filename, byte_size, chunk_count, uploaded_at, enrichment_status, source_type)
+     VALUES (?, ?, ?, ?, ?, ?, 'file')
      RETURNING id`
   ).bind(botId, filename, textBytes, chunks.length, now, enrichmentOptIn ? 'queued' : 'not_requested').first<{ id: number }>();
 
@@ -420,7 +420,98 @@ bots.post('/:id/knowledge', async (c) => {
     }
   }
 
-  return c.json({ id: sourceId, filename, byte_size: textBytes, chunk_count: chunks.length, uploaded_at: now, enrichment_status: enrichmentOptIn ? 'queued' : 'not_requested' }, 201);
+  return c.json({ id: sourceId, filename, byte_size: textBytes, chunk_count: chunks.length, uploaded_at: now, enrichment_status: enrichmentOptIn ? 'queued' : 'not_requested', source_type: 'file' }, 201);
+});
+
+// ---------------------------------------------------------------------------
+// POST /:id/knowledge/text
+// Add a direct text knowledge source (whole-KB architecture)
+// ---------------------------------------------------------------------------
+bots.post('/:id/knowledge/text', async (c) => {
+  const botId = c.req.param('id');
+  if (!validateBotId(botId)) return c.json({ error: 'invalid_bot_id', message: 'Invalid bot ID' }, 400);
+  const ownerId = c.get('userId');
+
+  // Verify ownership
+  const bot = await c.env.DB.prepare('SELECT id FROM bots WHERE id = ? AND owner_id = ?')
+    .bind(botId, ownerId).first();
+  if (!bot) return c.json({ error: 'not_found', message: 'Bot not found.' }, 404);
+
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'invalid_json', message: 'Request body must be valid JSON.' }, 400);
+  }
+
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+    return c.json({ error: 'invalid_body', message: 'Request body must be a JSON object.' }, 400);
+  }
+
+  const { text, label } = body as Record<string, unknown>;
+
+  if (typeof text !== 'string' || text.trim().length === 0) {
+    return c.json({ error: 'invalid_text', message: 'text is required and must be a non-empty string.' }, 400);
+  }
+
+  const maxTextChars = Math.max(1, parseInt(c.env.PREBASE_MAX_KB_TEXT_CHARS ?? '2000', 10));
+  if (text.length > maxTextChars) {
+    return c.json({ error: 'text_too_long', message: `Knowledge text must not exceed ${maxTextChars} characters.` }, 400);
+  }
+
+  // Label is an optional display name for this text source (e.g. 'FAQ', 'Policy')
+  const displayLabel = typeof label === 'string' && label.trim() ? label.trim().slice(0, 100) : 'text-input';
+
+  // Check slot count against limit
+  const maxSources = Math.max(1, parseInt(c.env.PREBASE_MAX_SOURCES_PER_BOT ?? '2', 10));
+  const { results: existingSources } = await c.env.DB.prepare(
+    'SELECT id FROM kb_sources WHERE bot_id = ?'
+  ).bind(botId).all<{ id: number }>();
+
+  if (existingSources.length >= maxSources) {
+    return c.json({ error: 'too_many_sources', message: `Maximum of ${maxSources} knowledge source slots reached. Delete an existing source to add new knowledge.` }, 409);
+  }
+
+  const trimmedText = text.trim();
+  const textBytes = new TextEncoder().encode(trimmedText).byteLength;
+  const chunks = chunkText(trimmedText);
+
+  if (chunks.length === 0) {
+    return c.json({ error: 'empty_text', message: 'Text contains no usable content.' }, 400);
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  // Filename for text sources uses the label + .txt extension for traceability
+  const filename = `${displayLabel}.txt`;
+
+  const sourceResult = await c.env.DB.prepare(
+    `INSERT INTO kb_sources (bot_id, filename, byte_size, chunk_count, uploaded_at, enrichment_status, source_type)
+     VALUES (?, ?, ?, ?, ?, 'not_requested', 'text')
+     RETURNING id`
+  ).bind(botId, filename, textBytes, chunks.length, now).first<{ id: number }>();
+
+  if (!sourceResult) {
+    return c.json({ error: 'insert_failed', message: 'Failed to create knowledge source.' }, 500);
+  }
+  const sourceId = sourceResult.id;
+
+  // Insert chunks in batch
+  const chunkStmts = chunks.map(chunk =>
+    c.env.DB.prepare(
+      `INSERT INTO kb_chunks (bot_id, source_id, chunk_index, content) VALUES (?, ?, ?, ?)`
+    ).bind(botId, sourceId, chunk.chunkIndex, chunk.content)
+  );
+  await c.env.DB.batch(chunkStmts);
+
+  return c.json({
+    id: sourceId,
+    filename,
+    label: displayLabel,
+    byte_size: textBytes,
+    chunk_count: chunks.length,
+    uploaded_at: now,
+    source_type: 'text',
+  }, 201);
 });
 
 // ---------------------------------------------------------------------------

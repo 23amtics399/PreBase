@@ -48,16 +48,23 @@ PREBASE_PER_BOT_DAILY    = "500"   # Max requests per bot per day (all IPs combi
 PREBASE_PER_BOT_IP_DAILY = "20"    # Max requests per visitor IP per bot per day
 PREBASE_IP_DAILY         = "100"   # Max requests per visitor IP across ALL bots per day
 
-# --- Retrieval ---
-PREBASE_CHAR_BUDGET      = "3600"  # Max characters of KB context sent to AI
+# --- Retrieval (Whole-KB architecture) ---
+# PREBASE_CHAR_BUDGET is retained for legacy code paths and tests but
+# is NOT used by the primary whole-KB loadFullBotKb() path.
+PREBASE_CHAR_BUDGET      = "3600"  # Legacy — not used in whole-KB primary path
 
 # --- Relevance guard ---
 # BM25 scores are negative; more negative = stronger match.
-# Chunks with score > PREBASE_MIN_BM25_SCORE are rejected as too weak.
-# Example: -0.1 is a near-zero (weak) match; -3.0 is a strong match.
-# At -0.5, a term must appear meaningfully in the chunk to pass.
-# This is a tunable starting value — adjust per knowledge base without code changes.
+# Retained for entity_grounding.ts (searchFullBotKbForEntity).
 PREBASE_MIN_BM25_SCORE   = "-0.5"
+
+# --- Knowledge Base Limits (whole-KB architecture) ---
+# These are the authoritative product limits. Any KB that exceeds these limits
+# will be rejected at upload/create time.
+PREBASE_MAX_SOURCES_PER_BOT  = "2"      # Max source slots per bot (files + text combined)
+PREBASE_MAX_KB_FILE_BYTES    = "10240"  # Max bytes per uploaded file (10 KB)
+PREBASE_MAX_KB_TEXT_CHARS    = "2000"   # Max characters for direct text input
+PREBASE_MAX_INSTRUCTIONS_CHARS = "2000" # Max characters for bot owner instructions
 
 # --- Input validation ---
 PREBASE_MAX_MESSAGE_LEN  = "2000"  # Max user message length in characters

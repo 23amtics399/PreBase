@@ -23,3 +23,13 @@ Thumbs.db
 # Test cache
 coverage/
 .nyc_output/
+
+# Temporary scratch, benchmark, and test artifacts
+scratch/
+packages/worker/scratch/
+packages/worker/tail.jsonl
+packages/worker/tail2.log
+test-policies.txt
+packages/worker/run_phase1_gate_tests.mjs
+packages/worker/test_production.mjs
+packages/worker/test_prompt_guard_production.mjs

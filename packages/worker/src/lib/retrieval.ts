@@ -8,7 +8,7 @@ export interface RetrievalResult {
   chunkIndex: number;
 }
 
-export type RetrievalMode = 'and' | 'or_fallback' | 'none';
+export type RetrievalMode = 'and' | 'or_fallback' | 'none' | 'full_kb';
 
 export type SearchResult = RetrievalResult[] & {
   results: RetrievalResult[];
@@ -118,4 +118,41 @@ export class FTS5Engine implements RetrievalEngine {
 
     return Object.assign(selected, { results: selected, mode });
   }
+}
+
+/**
+ * Loads the entire knowledge base for a bot as an ordered array.
+ * This is the primary retrieval path under the whole-KB architecture.
+ *
+ * Chunks are ordered by source upload date (ascending) then chunk_index (ascending)
+ * so that document structure is preserved in the synthesized context.
+ *
+ * Strictly scoped to botId — no cross-bot leakage is possible.
+ *
+ * @returns RetrievalResult[] with score=0 (BM25 not used in whole-KB mode).
+ */
+export async function loadFullBotKb(
+  db: D1Database,
+  botId: string
+): Promise<RetrievalResult[]> {
+  const { results } = await db
+    .prepare(
+      `SELECT
+         kc.content,
+         kc.chunk_index   AS chunkIndex,
+         ks.filename      AS sourceFilename
+       FROM kb_chunks kc
+       JOIN kb_sources ks ON ks.id = kc.source_id
+       WHERE kc.bot_id = ?
+       ORDER BY ks.uploaded_at ASC, kc.chunk_index ASC`
+    )
+    .bind(botId)
+    .all<{ content: string; chunkIndex: number; sourceFilename: string }>();
+
+  return (results ?? []).map(row => ({
+    content: row.content,
+    score: 0,
+    sourceFilename: row.sourceFilename,
+    chunkIndex: row.chunkIndex,
+  }));
 }
