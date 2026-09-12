@@ -23,6 +23,7 @@ jest.mock('../lib/ratelimit', () => ({
   checkIpGlobalLimit:     jest.fn().mockResolvedValue({ allowed: true }),
   checkBotIpLimit:        jest.fn().mockResolvedValue({ allowed: true }),
   checkBotGlobalLimit:    jest.fn().mockResolvedValue({ allowed: true }),
+  checkVisitorBurstLimit: jest.fn().mockResolvedValue({ allowed: true }),
   readGlobalAiUsage:      jest.fn().mockResolvedValue(0),
   incrementGlobalAiUsage: jest.fn().mockResolvedValue(undefined),
 }));
@@ -40,6 +41,7 @@ import {
   checkIpGlobalLimit,
   checkBotIpLimit,
   checkBotGlobalLimit,
+  checkVisitorBurstLimit,
   readGlobalAiUsage,
   incrementGlobalAiUsage,
 } from '../lib/ratelimit';
@@ -49,6 +51,7 @@ import { filterByRelevance } from '../lib/guard';
 const mockCheckIpGlobal    = checkIpGlobalLimit    as jest.Mock;
 const mockCheckBotIp       = checkBotIpLimit       as jest.Mock;
 const mockCheckBotGlobal   = checkBotGlobalLimit   as jest.Mock;
+const mockCheckVisitorBurst= checkVisitorBurstLimit as jest.Mock;
 const mockReadAiUsage      = readGlobalAiUsage     as jest.Mock;
 const mockIncrementAi      = incrementGlobalAiUsage as jest.Mock;
 const MockFTS5Engine       = FTS5Engine            as jest.Mock;
@@ -136,6 +139,7 @@ beforeEach(() => {
   mockCheckIpGlobal.mockResolvedValue({ allowed: true });
   mockCheckBotIp.mockResolvedValue({ allowed: true });
   mockCheckBotGlobal.mockResolvedValue({ allowed: true });
+  mockCheckVisitorBurst.mockResolvedValue({ allowed: true });
   mockReadAiUsage.mockResolvedValue(0);
   mockIncrementAi.mockResolvedValue(undefined);
   MockFTS5Engine.prototype.search.mockResolvedValue([]);
@@ -270,11 +274,18 @@ describe('POST /api/widget/chat — bot lookup', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 3. Rate limiting (429)
+// 3. Rate limiting (429) & Quota exhaustion (200 fallback)
 // ---------------------------------------------------------------------------
 describe('POST /api/widget/chat — rate limiting', () => {
   it('returns 429 when per-IP global limit is exceeded', async () => {
     mockCheckIpGlobal.mockResolvedValue({ allowed: false, reason: 'ip_global' });
+    const res = await post(buildEnv(), { botId: '00000000-0000-4000-8000-000000000456', message: 'hello' });
+    expect(res.status).toBe(429);
+    expect((await res.json() as Record<string,string>).error).toBe('rate_limited');
+  });
+
+  it('returns 429 when visitor burst limit is exceeded', async () => {
+    mockCheckVisitorBurst.mockResolvedValue({ allowed: false, reason: 'visitor_burst' });
     const res = await post(buildEnv(), { botId: '00000000-0000-4000-8000-000000000456', message: 'hello' });
     expect(res.status).toBe(429);
     expect((await res.json() as Record<string,string>).error).toBe('rate_limited');
@@ -294,12 +305,14 @@ describe('POST /api/widget/chat — rate limiting', () => {
     expect((await res.json() as Record<string,string>).error).toBe('rate_limited');
   });
 
-  it('returns 429 when global AI daily quota is exceeded', async () => {
+  it('returns fallback menu with HTTP 200 when global AI daily quota is exceeded', async () => {
     mockReadAiUsage.mockResolvedValue(7954);
     mockLoadFullBotKb.mockResolvedValue([{ content: 'text', score: -2.0, sourceFilename: 'f.md', chunkIndex: 0 }]);
-    const res = await post(buildEnv(), { botId: '00000000-0000-4000-8000-000000000456', message: 'hello' });
-    expect(res.status).toBe(429);
-    expect((await res.json() as Record<string,string>).error).toBe('service_unavailable');
+    const res = await post(buildEnv(), { botId: '00000000-0000-4000-8000-000000000456', message: 'What is your return policy?' });
+    expect(res.status).toBe(200);
+    const b = await res.json() as Record<string, unknown>;
+    expect(b.quota_exhausted).toBe(true);
+    expect(b.fallback_message).toBeDefined();
   });
 });
 

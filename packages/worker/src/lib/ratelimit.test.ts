@@ -2,6 +2,7 @@ import {
   checkIpGlobalLimit,
   checkBotIpLimit,
   checkBotGlobalLimit,
+  checkVisitorBurstLimit,
   readGlobalAiUsage,
   incrementGlobalAiUsage,
   atomicReserveGroqQuota,
@@ -238,5 +239,51 @@ describe('concurrent increment safety', () => {
     expect(sql).toMatch(/ON CONFLICT/i);
     // Must NOT contain a bare SELECT at the start (would indicate read-then-write)
     expect(sql.trim().toUpperCase()).not.toMatch(/^SELECT/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// checkVisitorBurstLimit (dedicated visitor_rate_limits table)
+// ---------------------------------------------------------------------------
+
+describe('checkVisitorBurstLimit', () => {
+  it('allows request when burst count is within limit', async () => {
+    const { db, decrementRun } = makeMockDb(5);
+    const result = await checkVisitorBurstLimit(db, 'bot-123', 'visitor-hash-1', 12345, 10);
+    expect(result.allowed).toBe(true);
+    expect(decrementRun).not.toHaveBeenCalled();
+  });
+
+  it('allows request when burst count equals limit', async () => {
+    const { db, decrementRun } = makeMockDb(10);
+    const result = await checkVisitorBurstLimit(db, 'bot-123', 'visitor-hash-1', 12345, 10);
+    expect(result.allowed).toBe(true);
+    expect(decrementRun).not.toHaveBeenCalled();
+  });
+
+  it('rejects and decrements counter when burst count exceeds limit', async () => {
+    const { db, decrementRun } = makeMockDb(11);
+    const result = await checkVisitorBurstLimit(db, 'bot-123', 'visitor-hash-1', 12345, 10);
+    expect(result.allowed).toBe(false);
+    expect((result as any).reason).toBe('visitor_burst');
+    expect(decrementRun).toHaveBeenCalledTimes(1);
+  });
+
+  it('targets visitor_rate_limits table and binds minute_bucket', async () => {
+    const insertStmt = {
+      bind: jest.fn().mockReturnThis(),
+      first: jest.fn().mockResolvedValue({ request_count: 1 }),
+      run: jest.fn(),
+    };
+    const prepareSpy = jest.fn().mockReturnValue(insertStmt);
+    const db = { prepare: prepareSpy } as unknown as D1Database;
+
+    await checkVisitorBurstLimit(db, 'bot-xyz', 'hash-abc', 9999, 10);
+
+    expect(prepareSpy).toHaveBeenCalledTimes(1);
+    const sql: string = prepareSpy.mock.calls[0][0];
+    expect(sql).toMatch(/INSERT INTO visitor_rate_limits/i);
+    expect(sql).toMatch(/minute_bucket/i);
+    expect(insertStmt.bind).toHaveBeenCalledWith('bot-xyz', 'hash-abc', 9999);
   });
 });

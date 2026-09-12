@@ -4,6 +4,7 @@ import type { MessageBatch, ExecutionContext } from '@cloudflare/workers-types';
 import widget from './routes/widget';
 import auth from './routes/auth';
 import bots from './routes/bots';
+import menu from './routes/menu';
 import { cors } from 'hono/cors';
 
 const app = new Hono<{ Bindings: Bindings }>();
@@ -60,6 +61,11 @@ app.route('/api/auth', auth);
 // Bot Management API
 // ---------------------------------------------------------------------------
 app.route('/api/bots', bots);
+
+// ---------------------------------------------------------------------------
+// Menu / Quick Answers API (authenticated — nested under /api/bots/:botId/menu)
+// ---------------------------------------------------------------------------
+app.route('/api/bots/:botId/menu', menu);
 
 // ---------------------------------------------------------------------------
 // Public share page: /chat/:botId

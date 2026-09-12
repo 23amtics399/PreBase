@@ -14,6 +14,16 @@ import {
 import {
   evaluatePolicyGrounding,
 } from './policy_grounding';
+import {
+  isGreeting,
+  extractKbTopics,
+  detectShortIntent,
+} from './intent_interceptor';
+import {
+  buildCacheKey,
+  getCachedAnswer,
+  setCachedAnswer,
+} from './answer_cache';
 
 export const FALLBACK_RESPONSE =
   "I couldn't find information about that in this bot's knowledge base.";
@@ -23,6 +33,14 @@ export const BLOCKED_GUARD_RESPONSE =
 
 export const CREDENTIAL_SAFETY_RESPONSE =
   "I can't handle or use OTPs or authentication codes. Please use the account recovery process or contact support without sharing the code.";
+
+export const GREETING_RESPONSE =
+  "Hi! I'm here to help. What would you like to know?";
+
+/** Builds a conservative short-intent clarification. Never invents policy details. */
+export function buildShortIntentResponse(topic: string): string {
+  return `Could you tell me a little more about what you'd like to know about ${topic}?`;
+}
 
 /**
  * Detects whether the user's input contains or attempts to submit sensitive authentication credentials,
@@ -75,6 +93,9 @@ export function sanitizeFinalAnswer(answer: string): string {
 export type RagStatus =
   | 'guard_blocked'            // Prompt Guard blocked the request (score > threshold)
   | 'credential_intercepted'   // Authentication code, OTP, or credential intercepted
+  | 'greeting_intercepted'     // Greeting detected — no KB load, no AI
+  | 'short_intent_intercepted' // Bare topic word with KB match — clarification returned
+  | 'cache_hit'                // Answered from D1 answer cache — no AI call
   | 'fallback_no_kb'           // Bot has no knowledge base chunks
   | 'fallback_no_candidates'   // No relevant knowledge found (legacy — kept for compat)
   | 'fallback_ai_quota'        // global AI quota exhausted
@@ -148,12 +169,24 @@ export interface RagPipelineResult {
   _rag: RagTelemetry;
 }
 
+/**
+ * @param env           Worker environment bindings
+ * @param botId         Bot UUID
+ * @param systemPrompt  Owner system prompt
+ * @param message       Raw user message
+ * @param today         'YYYY-MM-DD' UTC date string
+ * @param botUpdatedAt  bots.updated_at Unix timestamp — used as cache version key.
+ *                      Must be updated by every mutation that changes effective answers.
+ * @param waitUntil     Optional executionCtx.waitUntil for async cache write/cleanup.
+ */
 export async function executeRagPipeline(
   env: Bindings,
   botId: string,
   systemPrompt: string | undefined,
   message: string,
-  today: string
+  today: string,
+  botUpdatedAt: number = 0,
+  waitUntil?: (p: Promise<unknown>) => void
 ): Promise<RagPipelineResult> {
   // 0. Dedicated authentication / credential / OTP safety pre-filter (runs before retrieval & AI)
   if (isCredentialOrOtpInput(message)) {
@@ -175,6 +208,29 @@ export async function executeRagPipeline(
     };
     console.log('[rag:telemetry]', JSON.stringify({ botId, ...telemetry }));
     return { status: 200, answer: CREDENTIAL_SAFETY_RESPONSE, _rag: telemetry };
+  }
+
+  // 0b. Greeting interceptor (before KB load, before Prompt Guard)
+  //     Only fires when the ENTIRE message is a greeting — not a substring.
+  if (isGreeting(message)) {
+    const telemetry: RagTelemetry = {
+      ragStatus: 'greeting_intercepted',
+      retrievalMode: 'none',
+      helperStatus: 'none',
+      candidateCount: 0,
+      passedGuardCount: 0,
+      topScore: null,
+      aiCalled: false,
+      neuronsUsed: null,
+      promptChars: null,
+      estimatedInputTokens: null,
+      guardStatus: 'none' as any,
+      guardScore: null,
+      guardLatencyMs: 0,
+      guardAction: 'none' as any,
+    };
+    console.log('[rag:telemetry]', JSON.stringify({ botId, ...telemetry }));
+    return { status: 200, answer: GREETING_RESPONSE, _rag: telemetry };
   }
 
   // 1. Prompt Guard security classifier (pre-RAG)
@@ -272,6 +328,36 @@ export async function executeRagPipeline(
     }
   }
 
+  // 3b. Short-intent detection (after KB load, uses extracted KB topics)
+  //     Conservative: only intercept bare 1-2 word non-question messages with a
+  //     confident KB topic match. Passes through if no confident match.
+  const kbTopics = extractKbTopics(allChunks);
+  const shortIntentResult = detectShortIntent(message, kbTopics);
+  if (shortIntentResult.type === 'short_intent') {
+    const clarification = buildShortIntentResponse(shortIntentResult.topic);
+    const telemetry: RagTelemetry = {
+      ragStatus: 'short_intent_intercepted',
+      retrievalMode,
+      helperStatus,
+      candidateCount,
+      passedGuardCount: 0,
+      topScore: null,
+      aiCalled: false,
+      neuronsUsed: null,
+      promptChars: null,
+      estimatedInputTokens: null,
+      guardStatus: guardResult.status,
+      guardScore: guardResult.score,
+      guardLatencyMs: guardResult.latencyMs,
+      guardAction: guardResult.action,
+      candidateEntity: null,
+      entityGroundingState: 'none',
+      entityGroundingAction: 'none',
+    };
+    console.log('[rag:telemetry]', JSON.stringify({ botId, ...telemetry }));
+    return { status: 200, answer: clarification, _rag: telemetry };
+  }
+
   // 4. Empty KB fallback — bot has no knowledge base chunks
   if (relevantChunks.length === 0) {
     const telemetry: RagTelemetry = {
@@ -331,8 +417,41 @@ export async function executeRagPipeline(
     return { status: 200, answer: sanitizeFinalAnswer(policyEval.boundedAnswer), _rag: telemetry };
   }
 
+  // 5b. Answer cache lookup (after all security & grounding gates)
+  //     Cache key: botId + botUpdatedAt + sha256(normalizedMessage)
+  //     Only successful ai_called answers are stored — see answer_cache.ts.
+  const cacheKey = await buildCacheKey(botId, botUpdatedAt, message);
+  const cachedAnswer = await getCachedAnswer(env.DB, cacheKey);
+  if (cachedAnswer !== null) {
+    const telemetry: RagTelemetry = {
+      ragStatus: 'cache_hit',
+      retrievalMode,
+      helperStatus,
+      candidateCount,
+      passedGuardCount: relevantChunks.length,
+      topScore: null,
+      aiCalled: false,
+      neuronsUsed: null,
+      promptChars: null,
+      estimatedInputTokens: null,
+      guardStatus: guardResult.status,
+      guardScore: guardResult.score,
+      guardLatencyMs: guardResult.latencyMs,
+      guardAction: guardResult.action,
+      candidateEntity,
+      entityGroundingState,
+      entityGroundingAction,
+      policyGroundingStatus,
+      policyOperation,
+    };
+    console.log('[rag:telemetry]', JSON.stringify({ botId, ...telemetry }));
+    return { status: 200, answer: cachedAnswer, _rag: telemetry };
+  }
+
   // 6. Global AI Quota check
-  const aiDailyLimit = Math.max(1, parseInt(env.PREBASE_AI_DAILY_LIMIT, 10) || 7954);
+  //    Returns HTTP 200 so the widget shows the fallback menu gracefully —
+  //    the widget/caller inspects ragStatus === 'fallback_ai_quota' to render menu UI.
+  const aiDailyLimit = Math.max(1, parseInt(env.PREBASE_AI_DAILY_LIMIT, 10) || 100);
   const currentAiCalls = await readGlobalAiUsage(env.DB, today);
   if (currentAiCalls >= aiDailyLimit) {
     const telemetry: RagTelemetry = {
@@ -359,8 +478,8 @@ export async function executeRagPipeline(
     console.log('[rag:telemetry]', JSON.stringify({ botId, ...telemetry }));
     return {
       status: 429,
-      error: 'service_unavailable',
-      message: 'Service is temporarily at capacity. Please try again tomorrow.',
+      error: 'ai_quota_exhausted',
+      message: "Today's AI limit has been reached. You can still use Quick Answers below, or contact support.",
       _rag: telemetry,
     };
   }
@@ -431,6 +550,14 @@ export async function executeRagPipeline(
 
     // 7. Increment global AI usage on success
     await incrementGlobalAiUsage(env.DB, today);
+
+    // 8. Write to answer cache (fire-and-forget via waitUntil if available)
+    const cacheWrite = setCachedAnswer(env.DB, cacheKey, sanitizeFinalAnswer(answer));
+    if (waitUntil) {
+      waitUntil(cacheWrite);
+    } else {
+      await cacheWrite;
+    }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[widget] AI inference failed for bot ${botId}:`, msg);

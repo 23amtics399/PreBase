@@ -406,3 +406,61 @@ export async function readGroqQuotaLedger(
     .bind(day, modelId, useCase)
     .first();
 }
+
+// ---------------------------------------------------------------------------
+// Visitor short-burst rate limit (dedicated visitor_rate_limits table)
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-visitor-per-bot rolling 60-second burst limit.
+ *
+ * Key: (bot_id, visitor_hash, minute_bucket)
+ *   visitor_hash  — SHA-256( RATE_LIMIT_SECRET + visitorId ) — computed by caller
+ *   minute_bucket — Math.floor(Date.now() / 1000 / 60)
+ *
+ * This table is SEPARATE from the `usage` table (daily analytics) and from
+ * `global_usage` (AI quota). Its sole purpose is burst abuse protection.
+ *
+ * Atomicity: same ON CONFLICT / RETURNING / rollback pattern as incrementCounter.
+ * Rollback on over-limit ensures the counter remains accurate for non-abusive
+ * visitors and doesn't permanently block a visitor who hit the limit.
+ *
+ * @param db          D1 database
+ * @param botId       Bot UUID
+ * @param visitorHash SHA-256 hex of (RATE_LIMIT_SECRET + visitorId|ip)
+ * @param minuteBucket Math.floor(Date.now() / 1000 / 60)
+ * @param limit       Max requests allowed per visitor per bot per minute (default 10)
+ */
+export async function checkVisitorBurstLimit(
+  db: D1Database,
+  botId: string,
+  visitorHash: string,
+  minuteBucket: number,
+  limit: number
+): Promise<RateLimitResult> {
+  const row = await db
+    .prepare(
+      `INSERT INTO visitor_rate_limits (bot_id, visitor_hash, minute_bucket, request_count)
+       VALUES (?, ?, ?, 1)
+       ON CONFLICT (bot_id, visitor_hash, minute_bucket)
+       DO UPDATE SET request_count = request_count + 1
+       RETURNING request_count`
+    )
+    .bind(botId, visitorHash, minuteBucket)
+    .first<{ request_count: number }>();
+
+  const count = row?.request_count ?? 1;
+  if (count > limit) {
+    // Rollback to keep counter accurate for the current minute bucket
+    await db
+      .prepare(
+        `UPDATE visitor_rate_limits
+         SET request_count = MAX(0, request_count - 1)
+         WHERE bot_id = ? AND visitor_hash = ? AND minute_bucket = ?`
+      )
+      .bind(botId, visitorHash, minuteBucket)
+      .run();
+    return { allowed: false, reason: 'visitor_burst' };
+  }
+  return { allowed: true };
+}

@@ -433,8 +433,13 @@ bots.post('/:id/knowledge', async (c) => {
     }
   }
 
+  // Bump bots.updated_at so the answer cache is auto-invalidated on KB change
+  await c.env.DB.prepare('UPDATE bots SET updated_at = ? WHERE id = ?')
+    .bind(now, botId).run();
+
   return c.json({ id: sourceId, filename, byte_size: textBytes, chunk_count: chunks.length, uploaded_at: now, enrichment_status: enrichmentOptIn ? 'queued' : 'not_requested', source_type: 'file' }, 201);
 });
+
 
 // ---------------------------------------------------------------------------
 // POST /:id/knowledge/text
@@ -516,6 +521,10 @@ bots.post('/:id/knowledge/text', async (c) => {
   );
   await c.env.DB.batch(chunkStmts);
 
+  // Bump bots.updated_at so the answer cache is auto-invalidated on KB change
+  await c.env.DB.prepare('UPDATE bots SET updated_at = ? WHERE id = ?')
+    .bind(now, botId).run();
+
   return c.json({
     id: sourceId,
     filename,
@@ -552,6 +561,11 @@ bots.delete('/:id/knowledge/:sourceId', async (c) => {
   if (!result.success || result.meta.changes === 0) {
     return c.json({ error: 'not_found', message: 'Source not found.' }, 404);
   }
+
+  // Bump bots.updated_at so the answer cache is auto-invalidated on KB change
+  const nowDel = Math.floor(Date.now() / 1000);
+  await c.env.DB.prepare('UPDATE bots SET updated_at = ? WHERE id = ?')
+    .bind(nowDel, botId).run();
 
   // Deletion cascades to kb_chunks, which fires trigger to clean up kb_fts.
   return c.json({ success: true });
@@ -595,9 +609,10 @@ bots.post('/:id/chat', async (c) => {
 
   const ownerId = c.get('userId');
 
-  // Verify ownership
-  const bot = await c.env.DB.prepare('SELECT id, system_prompt FROM bots WHERE id = ? AND owner_id = ?')
-    .bind(botId, ownerId).first<{ id: string; system_prompt: string }>();
+  // Verify ownership — also fetch updated_at for cache key versioning
+  const bot = await c.env.DB.prepare(
+    'SELECT id, system_prompt, updated_at FROM bots WHERE id = ? AND owner_id = ?'
+  ).bind(botId, ownerId).first<{ id: string; system_prompt: string; updated_at: number }>();
     
   if (!bot) return c.json({ error: 'not_found', message: 'Bot not found.' }, 404);
 
@@ -621,7 +636,8 @@ bots.post('/:id/chat', async (c) => {
     botId,
     bot.system_prompt,
     message,
-    today
+    today,
+    bot.updated_at ?? 0
   );
 
   if (ragResult.status !== 200) {

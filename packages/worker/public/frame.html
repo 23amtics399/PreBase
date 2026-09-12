@@ -11,6 +11,10 @@
       --border: #e2e8f0;
       --text: #0f172a;
       --text-muted: #64748b;
+      --chip-bg: #eff6ff;
+      --chip-border: #bfdbfe;
+      --chip-text: #1d4ed8;
+      --chip-bg-hover: #dbeafe;
     }
     body {
       margin: 0;
@@ -80,6 +84,40 @@
       background: none;
       color: var(--text-muted);
       font-size: 12px;
+    }
+    /* Quick Answer chips */
+    .chips-container {
+      align-self: flex-start;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      max-width: 100%;
+    }
+    .chip {
+      background: var(--chip-bg);
+      border: 1px solid var(--chip-border);
+      color: var(--chip-text);
+      border-radius: 16px;
+      padding: 6px 12px;
+      font-size: 13px;
+      cursor: pointer;
+      transition: background 0.15s, transform 0.1s;
+      white-space: nowrap;
+    }
+    .chip:hover {
+      background: var(--chip-bg-hover);
+      transform: translateY(-1px);
+    }
+    /* Fallback/quota-exhausted banner */
+    .quota-banner {
+      align-self: stretch;
+      background: #fef9c3;
+      border: 1px solid #fde68a;
+      border-radius: 12px;
+      padding: 12px 16px;
+      font-size: 13px;
+      color: #92400e;
+      line-height: 1.4;
     }
     .input-area {
       padding: 16px;
@@ -156,7 +194,7 @@
 
   <div class="input-area" id="chat-input-area">
     <input type="text" id="message-input" placeholder="Type your message..." autocomplete="off" disabled>
-    <button type="button" id="send-btn" disabled>
+    <button type="submit" id="send-btn" disabled>
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <line x1="22" y1="2" x2="11" y2="13"></line>
         <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
@@ -166,12 +204,25 @@
 
   <script>
     const urlParams = new URLSearchParams(window.location.search);
-    const botId = urlParams.get('bot');
+    const botId = urlParams.get('bot') || urlParams.get('botId');
     
     const chatContainer = document.getElementById('chat-container');
     const messageInput = document.getElementById('message-input');
     const sendBtn = document.getElementById('send-btn');
     const headerTitle = document.getElementById('header-title');
+
+    // Persistent visitor ID for burst rate limiting
+    let visitorId = null;
+    try {
+      visitorId = localStorage.getItem('pb_visitor_id');
+      if (!visitorId) {
+        visitorId = crypto.randomUUID ? crypto.randomUUID() : (Math.random().toString(36).slice(2) + Date.now().toString(36));
+        localStorage.setItem('pb_visitor_id', visitorId);
+      }
+    } catch(e) { /* localStorage blocked — fallback to null (server uses IP) */ }
+
+    // Bot-level state
+    let globalQuickAnswers = []; // items configured by owner
 
     function addMessage(text, role) {
       const msgDiv = document.createElement('div');
@@ -186,6 +237,77 @@
       msgDiv.className = 'message system';
       msgDiv.textContent = text;
       chatContainer.appendChild(msgDiv);
+      chatContainer.scrollTop = chatContainer.scrollHeight;
+    }
+
+    /**
+     * Renders clickable quick-answer chips. When a chip is clicked it submits
+     * the selection via the /chat/menu-respond endpoint and displays the
+     * owner-authored response.
+     *
+     * @param {Array<{id, label, response}>} items
+     * @param {boolean} isFallback - true when shown due to quota exhaustion
+     */
+    function renderChips(items, isFallback = false) {
+      if (!items || items.length === 0) return;
+      const container = document.createElement('div');
+      container.className = 'chips-container';
+      items.forEach(item => {
+        const btn = document.createElement('button');
+        btn.className = 'chip';
+        btn.textContent = item.label;
+        btn.dataset.itemId = item.id;
+        btn.addEventListener('click', async () => {
+          // Remove the chips row so the user sees a clean thread
+          container.remove();
+          addMessage(item.label, 'user');
+          showTyping();
+          try {
+            const res = await fetch('/api/widget/chat/menu-respond', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ botId, itemId: item.id, visitorId })
+            });
+            hideTyping();
+            if (res.ok) {
+              const data = await res.json();
+              addMessage(data.answer, 'bot');
+              // Show chips again so the visitor can ask another quick question
+              if (globalQuickAnswers.length > 0) {
+                renderChips(globalQuickAnswers);
+              }
+            } else {
+              addSystemMessage('Could not retrieve answer. Please try again.');
+            }
+          } catch(e) {
+            hideTyping();
+            addSystemMessage('Network error.');
+          }
+        });
+        container.appendChild(btn);
+      });
+      chatContainer.appendChild(container);
+      chatContainer.scrollTop = chatContainer.scrollHeight;
+    }
+
+    /**
+     * Renders the quota-exhausted fallback UI. Shows a banner and, if
+     * the bot has menu items, clickable chips. If not, shows support contact.
+     */
+    function renderQuotaFallback(data) {
+      const banner = document.createElement('div');
+      banner.className = 'quota-banner';
+      banner.textContent = data.fallback_message ||
+        "Today's AI limit has been reached. You can use the Quick Answers below.";
+      chatContainer.appendChild(banner);
+
+      if (data.menu && data.menu.length > 0) {
+        renderChips(data.menu, true);
+      } else if (data.support_contact) {
+        addSystemMessage(`For support: ${data.support_contact}`);
+      } else {
+        addSystemMessage('Please check back tomorrow or contact the site administrator.');
+      }
       chatContainer.scrollTop = chatContainer.scrollHeight;
     }
 
@@ -210,7 +332,7 @@
     if (!botId) {
       addSystemMessage('Error: No bot ID provided.');
     } else {
-      // Fetch bot info
+      // Fetch bot info including quick_answers
       fetch(`/api/widget/bot/${encodeURIComponent(botId)}`)
         .then(res => {
           if (!res.ok) {
@@ -224,6 +346,11 @@
           messageInput.disabled = false;
           sendBtn.disabled = false;
           addSystemMessage('Connected.');
+          // Render initial quick-answer chips if enabled
+          if (data.quick_answers && data.quick_answers.length > 0) {
+            globalQuickAnswers = data.quick_answers;
+            renderChips(globalQuickAnswers);
+          }
         })
         .catch(err => {
           addSystemMessage(err.message);
@@ -247,19 +374,31 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             botId: botId,
-            message: text
+            message: text,
+            visitorId: visitorId
           })
         });
         
         hideTyping();
-        
+
         if (response.status === 429) {
-          addSystemMessage('Rate limit exceeded. Please try again later.');
+          addSystemMessage('Too many messages. Please wait a moment before sending more.');
         } else if (!response.ok) {
-          addSystemMessage('An error occurred.');
+          addSystemMessage('An error occurred. Please try again.');
         } else {
           const data = await response.json();
-          addMessage(data.answer, 'bot');
+
+          if (data.quota_exhausted) {
+            // AI quota exhausted — render fallback gracefully
+            renderQuotaFallback(data);
+          } else {
+            addMessage(data.answer, 'bot');
+            // Show quick-answer chips after each AI reply if enabled
+            if (data.quick_answers && data.quick_answers.length > 0) {
+              globalQuickAnswers = data.quick_answers;
+              renderChips(globalQuickAnswers);
+            }
+          }
         }
       } catch (err) {
         hideTyping();
