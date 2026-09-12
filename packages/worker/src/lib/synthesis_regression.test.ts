@@ -234,6 +234,47 @@ describe('Dual-KB Synthesis Correctness & Regression Suite', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // 6b. Shipping/Return Crosstalk Regression
+  // ---------------------------------------------------------------------------
+  describe('6b. Shipping/Return Policy Crosstalk Prevention', () => {
+    const returnPolicyContent = 'Customers may return unused products within 30 days of delivery. Returned products must be in their original packaging and in resalable condition. Approved refunds are issued to the original payment method within 5 to 7 business days after the returned product is received and inspected. Products damaged after delivery due to customer misuse are not eligible for return.';
+
+    it('return-policy content with "delivery" must NOT be selected for shipping queries', () => {
+      const result = extractGoverningPolicySentence(returnPolicyContent, 'Germany', 'Do you ship to Germany?');
+      expect(result).toBeNull();
+    });
+
+    it('genuine shipping content IS still selected for shipping queries', () => {
+      const shippingContent = 'International shipping is available to selected countries and usually takes 10 to 15 business days.';
+      const result = extractGoverningPolicySentence(shippingContent, 'Germany', 'Do you ship to Germany?');
+      expect(result).not.toBeNull();
+      expect(result).toContain('International shipping is available');
+    });
+
+    it('return-policy content IS still selected for return queries', () => {
+      const result = extractGoverningPolicySentence(returnPolicyContent, 'used products', 'What is your return policy?');
+      expect(result).not.toBeNull();
+      expect(result).toContain('return unused products');
+    });
+
+    it('bounded response for Germany omits return-policy bleed when KB has only return content', () => {
+      const response = buildBoundedUnconfirmedResponse(
+        returnPolicyContent,
+        'Germany',
+        'absent',
+        supportEmail,
+        'Do you ship to Germany?'
+      );
+      expect(response).not.toContain('return unused products');
+      expect(response).not.toContain('original packaging');
+      expect(response).not.toContain('30 days of delivery');
+      expect(response).toContain('does not mention');
+      expect(response).toContain('does not specify whether it is included or supported');
+      expect(response).toContain(supportEmail);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // 7. Dedicated Pre-Retrieval Authentication / OTP Safety Response
   // ---------------------------------------------------------------------------
   describe('7. Dedicated Credential & OTP Interception', () => {

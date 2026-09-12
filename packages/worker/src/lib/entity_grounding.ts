@@ -609,9 +609,28 @@ export function extractGoverningPolicySentence(
   const isDiscount = /\b(?:discount|discounts|student)\b/i.test(combinedContext);
   const isReturn = /\b(?:return|returns|refund|refunds|cancellation|cancellations)\b/i.test(combinedContext);
 
+  // Return/refund context signals — used to exclude candidates that belong to
+  // the returns domain when the query is about shipping/destination.
+  const RETURN_CONTEXT_SIGNALS = /\b(?:returns?|refunds?|unused|resalable|original\s+packaging|cancellations?|after\s+(?:the\s+)?(?:returned|return)|payment\s+method|inspected)\b/i;
+
+  // Strong shipping/destination signals — "delivery" alone is too weak because
+  // return-policy sentences also use "… within 30 days of delivery".
+  const STRONG_SHIPPING_SIGNALS = /\b(?:ship|shipping|international\s+delivery|international\s+shipping|internationally|destinations?|countries|transit|ship\s+to|ships?\s+to|shipping\s+is\s+available|selected\s+countries|selected\s+destinations)\b/i;
+
+  // Weak shipping signal — only matches if no return-context is present.
+  const WEAK_SHIPPING_SIGNALS = /\b(?:deliver(?:y|s|ies)?)\b/i;
+
   for (const cand of cleanCandidates) {
-    if (isShipping && /\b(?:ship|shipping|delivery|deliver|delivers|destinations?|countries|international(?:ly)?|transit)\b/i.test(cand)) {
-      return cand;
+    if (isShipping) {
+      const hasReturnContext = RETURN_CONTEXT_SIGNALS.test(cand);
+      const hasStrongShipping = STRONG_SHIPPING_SIGNALS.test(cand);
+      const hasWeakShipping = WEAK_SHIPPING_SIGNALS.test(cand);
+
+      // Strong shipping signal always wins; weak signal only if no return context
+      if (hasStrongShipping || (hasWeakShipping && !hasReturnContext)) {
+        return cand;
+      }
+      continue; // Skip return-context candidates entirely for shipping queries
     }
     if (isPayment && /\b(?:pay|payment|payments|methods|accept|accepts|accepted|cards?|currencies|bank)\b/i.test(cand)) {
       return cand;
