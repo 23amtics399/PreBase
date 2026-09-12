@@ -4,7 +4,7 @@
  * Calls onSuccess(user) when authentication succeeds.
  */
 
-import { login, register } from '../api.js';
+import { login, register, getMe } from '../api.js?v=6';
 
 export function renderLogin(container, initialTab = 'login', onSuccess) {
   // Build auth page structure using safe DOM APIs
@@ -141,7 +141,6 @@ export function renderLogin(container, initialTab = 'login', onSuccess) {
     }
 
     // Fetch user info
-    const { getMe } = await import('../api.js');
     const me = await getMe();
     if (me.ok && me.data?.user) {
       onSuccess(me.data.user);
@@ -193,8 +192,7 @@ export function renderLogin(container, initialTab = 'login', onSuccess) {
     }
 
     // Auto-login after registration
-    const { login: doLogin } = await import('../api.js');
-    const loginRes = await doLogin(email, password);
+    const loginRes = await login(email, password);
     submitEl.classList.remove('loading');
     submitEl.disabled = false;
 
@@ -205,7 +203,6 @@ export function renderLogin(container, initialTab = 'login', onSuccess) {
       return;
     }
 
-    const { getMe } = await import('../api.js');
     const me = await getMe();
     if (me.ok && me.data?.user) {
       onSuccess(me.data.user);

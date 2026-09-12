@@ -4,10 +4,13 @@
  * Routes: #login, #register, #dashboard, #bot/<id>
  */
 
-import { getMe, logout } from './api.js?v=5';
-import { renderLogin } from './views/login.js?v=5';
-import { renderDashboard } from './views/dashboard.js?v=5';
-import { renderBot } from './views/bot.js?v=5';
+import { getMe, logout } from './api.js?v=6';
+import { renderLogin } from './views/login.js?v=6';
+import { renderDashboard } from './views/dashboard.js?v=6';
+import { renderBot } from './views/bot.js?v=6';
+import { showToast } from './toast.js?v=6';
+
+export { showToast };
 
 // --------------------------------------------------------------------------
 // App state (plain object — no framework needed for MVP)
@@ -15,18 +18,6 @@ import { renderBot } from './views/bot.js?v=5';
 export const appState = {
   user: null, // { id, email } when authenticated
 };
-
-// --------------------------------------------------------------------------
-// Toast notifications
-// --------------------------------------------------------------------------
-export function showToast(message, type = 'default') {
-  const container = document.getElementById('toast-container');
-  const toast = document.createElement('div');
-  toast.className = 'toast' + (type !== 'default' ? ` ${type}` : '');
-  toast.textContent = message;
-  container.appendChild(toast);
-  setTimeout(() => toast.remove(), 3200);
-}
 
 // --------------------------------------------------------------------------
 // Auth helpers
@@ -65,7 +56,10 @@ async function navigate(route) {
   await renderRoute(route || getRoute());
 }
 
+let activeRenderId = 0;
+
 async function renderRoute(hash) {
+  const renderId = ++activeRenderId;
   const main = document.getElementById('main');
 
   if (!hash || hash === 'dashboard') {
@@ -94,7 +88,7 @@ async function renderRoute(hash) {
       return;
     }
     showAppShell();
-    await renderBot(main, botId, navigate);
+    await renderBot(main, botId, navigate, () => renderId === activeRenderId);
     return;
   }
 
@@ -138,49 +132,53 @@ async function init() {
 }
 
 // --------------------------------------------------------------------------
-// Hash change listener
-// --------------------------------------------------------------------------
-window.addEventListener('hashchange', async () => {
-  const hash = getRoute();
-
-  // Auth guard: if not logged in, redirect to login
-  if (!appState.user) {
-    if (hash !== 'login' && hash !== 'register') {
-      window.location.hash = 'login';
-      return;
-    }
-  }
-
-  await renderRoute(hash);
-});
-
-// --------------------------------------------------------------------------
 // Logout button
 // --------------------------------------------------------------------------
-document.getElementById('logout-btn').addEventListener('click', async () => {
-  const btn = document.getElementById('logout-btn');
-  btn.classList.add('loading');
-  btn.disabled = true;
+const logoutBtn = document.getElementById('logout-btn');
+if (logoutBtn && !logoutBtn.dataset.bound) {
+  logoutBtn.dataset.bound = 'true';
+  logoutBtn.addEventListener('click', async () => {
+    logoutBtn.classList.add('loading');
+    logoutBtn.disabled = true;
 
-  await logout();
-  appState.user = null;
-  window.location.hash = 'login';
-  // Force re-render (hashchange may not fire if already on #login)
-  showAuthRoot();
-  renderLogin(
-    document.getElementById('auth-root'),
-    'login',
-    (user) => {
-      setUser(user);
-      window.location.hash = 'dashboard';
+    await logout();
+    appState.user = null;
+    window.location.hash = 'login';
+    // Force re-render (hashchange may not fire if already on #login)
+    showAuthRoot();
+    renderLogin(
+      document.getElementById('auth-root'),
+      'login',
+      (user) => {
+        setUser(user);
+        window.location.hash = 'dashboard';
+      }
+    );
+
+    logoutBtn.classList.remove('loading');
+    logoutBtn.disabled = false;
+  });
+}
+
+// --------------------------------------------------------------------------
+// Boot (idempotent guard prevents duplicate router/init runs)
+// --------------------------------------------------------------------------
+if (!window.__PREBASE_SPA_INITIALIZED__) {
+  window.__PREBASE_SPA_INITIALIZED__ = true;
+
+  window.addEventListener('hashchange', async () => {
+    const hash = getRoute();
+
+    // Auth guard: if not logged in, redirect to login
+    if (!appState.user) {
+      if (hash !== 'login' && hash !== 'register') {
+        window.location.hash = 'login';
+        return;
+      }
     }
-  );
 
-  btn.classList.remove('loading');
-  btn.disabled = false;
-});
+    await renderRoute(hash);
+  });
 
-// --------------------------------------------------------------------------
-// Boot
-// --------------------------------------------------------------------------
-init();
+  init();
+}

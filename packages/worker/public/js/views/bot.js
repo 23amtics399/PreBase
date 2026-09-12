@@ -8,8 +8,8 @@ import {
   getKnowledge, uploadKnowledge, deleteKnowledge, addTextKnowledge,
   previewChat, publishBot, unpublishBot,
   getMenuItems, updateMenuSettings, createMenuItem, updateMenuItem, deleteMenuItem,
-} from '../api.js?v=5';
-import { showToast } from '../app.js';
+} from '../api.js?v=6';
+import { showToast } from '../toast.js?v=6';
 
 // Production domain for share/embed links
 const PROD_DOMAIN = 'https://prebase.sji.one';
@@ -23,7 +23,7 @@ const MAX_MENU_ITEMS = 8;
 const MAX_MENU_LABEL_CHARS = 40;
 const MAX_MENU_RESPONSE_CHARS = 1000;
 
-export async function renderBot(container, botId, navigate) {
+export async function renderBot(container, botId, navigate, isActive) {
   container.innerHTML = '';
 
   // Back button
@@ -55,6 +55,8 @@ export async function renderBot(container, botId, navigate) {
     getMenuItems(botId)
   ]);
 
+  if (isActive && !isActive()) return; // Stale render superseded by a newer navigation
+
   if (!botRes.ok) {
     loadingEl.remove();
     if (botRes.status === 401) { navigate('login'); return; }
@@ -66,13 +68,16 @@ export async function renderBot(container, botId, navigate) {
     return;
   }
 
-  loadingEl.remove();
   const bot = botRes.data;
   const sources = kbRes.ok ? (kbRes.data?.sources || []) : [];
   const initialMenuItems = menuRes.ok ? (menuRes.data?.items || []) : [];
   const initialQuickAnswersEnabled = menuRes.ok
     ? !!menuRes.data?.quick_answers_enabled
     : (bot.quick_answers_enabled === 1);
+
+  // Clear container completely (removing loading skeleton) before rendering sections
+  container.innerHTML = '';
+  container.appendChild(backBtn);
 
   // Page header
   const header = document.createElement('div');
