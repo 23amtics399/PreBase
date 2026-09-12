@@ -5,18 +5,19 @@
 
 import {
   getBot, updateBot, deleteBot,
-  getKnowledge, uploadKnowledge, deleteKnowledge,
+  getKnowledge, uploadKnowledge, deleteKnowledge, addTextKnowledge,
   previewChat, publishBot, unpublishBot,
-} from '../api.js';
+} from '../api.js?v=4';
 import { showToast } from '../app.js';
 
 // Production domain for share/embed links
 const PROD_DOMAIN = 'https://prebase.sji.one';
 
-// KB limits (mirrors wrangler.toml defaults — displayed for UX only; server is authoritative)
-const MAX_SOURCES = 10;
-const MAX_TOTAL_BYTES = 5 * 1024 * 1024; // 5 MB
-const MAX_UPLOAD_BYTES = 3 * 1024 * 1024; // 3 MB
+// KB & Bot limits (mirrors server architecture — displayed for UX only; server is authoritative)
+const MAX_SOURCES = 2;
+const MAX_UPLOAD_BYTES = 10 * 1024; // 10 KB per file
+const MAX_TEXT_CHARS = 2000; // 2,000 characters per direct text source
+const MAX_INSTRUCTION_CHARS = 2000; // 2,000 characters for system prompt/instructions
 
 export async function renderBot(container, botId, navigate) {
   container.innerHTML = '';
@@ -228,11 +229,11 @@ function buildInstructionsSection(bot) {
   const body = document.createElement('div');
   body.className = 'section-body';
 
-  // Info notice
+  // Info notice — clarifies that instructions do not consume a knowledge slot
   const notice = document.createElement('div');
   notice.className = 'alert alert-info';
   notice.style.marginBottom = '16px';
-  notice.textContent = 'Instructions influence how the AI responds, but do not guarantee perfect compliance with every rule. Use clear, specific language for best results.';
+  notice.textContent = 'Instructions guide your bot\'s role, tone, and behavioral constraints (maximum 2,000 characters). They do NOT consume a knowledge-source slot and should not contain reference documents or FAQs (add those in the Knowledge section below).';
 
   const promptGroup = document.createElement('div');
   promptGroup.className = 'form-group';
@@ -243,16 +244,17 @@ function buildInstructionsSection(bot) {
   promptInput.id = 'bot-prompt';
   promptInput.className = 'input';
   promptInput.style.minHeight = '140px';
-  promptInput.maxLength = 5000;
+  promptInput.maxLength = MAX_INSTRUCTION_CHARS;
   promptInput.placeholder =
     'Example: "You are a friendly support assistant for Acme Inc. Help users with product questions. Politely decline questions unrelated to Acme products. Always suggest contacting support@acme.com for billing issues."';
   promptInput.value = bot.system_prompt || ''; // safe — .value
 
   const charCount = document.createElement('div');
   charCount.className = 'char-count';
-  charCount.textContent = `${(bot.system_prompt || '').length} / 5000`;
+  charCount.id = 'instructions-char-count';
+  charCount.textContent = `${(bot.system_prompt || '').length} / ${MAX_INSTRUCTION_CHARS} characters`;
   promptInput.addEventListener('input', () => {
-    charCount.textContent = `${promptInput.value.length} / 5000`;
+    charCount.textContent = `${promptInput.value.length} / ${MAX_INSTRUCTION_CHARS} characters`;
   });
 
   promptGroup.appendChild(promptLabel);
@@ -260,6 +262,10 @@ function buildInstructionsSection(bot) {
   promptGroup.appendChild(charCount);
 
   const saveRow = buildSaveRow('instructions-save-status', async () => {
+    if (promptInput.value.length > MAX_INSTRUCTION_CHARS) {
+      showToast(`Instructions must not exceed ${MAX_INSTRUCTION_CHARS} characters.`, 'error');
+      return null;
+    }
     return await updateBot(bot.id, { system_prompt: promptInput.value.trim() });
   });
 
@@ -285,7 +291,7 @@ function buildKnowledgeSection(bot, initialSources, pageContainer) {
   t.textContent = 'Knowledge';
   const sub = document.createElement('div');
   sub.className = 'section-subtitle';
-  sub.textContent = 'Upload text files your bot uses to answer questions.';
+  sub.textContent = 'Add up to 2 knowledge sources total using any combination of uploaded files (up to 10 KB each) and direct-text sources (up to 2,000 characters each).';
   titleDiv.appendChild(t);
   titleDiv.appendChild(sub);
   hdr.appendChild(titleDiv);
@@ -331,15 +337,177 @@ function buildKnowledgeSection(bot, initialSources, pageContainer) {
   warning.appendChild(warnNote);
   body.appendChild(warning);
 
-  // Usage summary
+  // Usage summary (slots used / remaining)
   const usageSummaryEl = document.createElement('div');
   body.appendChild(usageSummaryEl);
 
-  // Source list
-  const sourceListEl = document.createElement('div');
-  sourceListEl.className = 'source-list';
-  sourceListEl.id = 'source-list';
-  body.appendChild(sourceListEl);
+  // Limit reached alert banner (shown when 2/2 slots used)
+  const limitBanner = document.createElement('div');
+  limitBanner.className = 'alert alert-info';
+  limitBanner.id = 'kb-limit-banner';
+  limitBanner.style.display = 'none';
+  limitBanner.style.marginBottom = '16px';
+  limitBanner.textContent = 'Maximum 2 knowledge sources reached. Delete an existing source below if you need to add another file or direct-text source.';
+  body.appendChild(limitBanner);
+
+  // Two-column input container
+  const inputGrid = document.createElement('div');
+  inputGrid.style.display = 'grid';
+  inputGrid.style.gridTemplateColumns = 'repeat(auto-fit, minmax(300px, 1fr))';
+  inputGrid.style.gap = '16px';
+  inputGrid.style.marginBottom = '20px';
+
+  // --------------------------------------------------------------------------
+  // Panel A: File Upload (Max 10 KB per file)
+  // --------------------------------------------------------------------------
+  const uploadCard = document.createElement('div');
+  uploadCard.className = 'card';
+  uploadCard.style.padding = '16px';
+  uploadCard.style.display = 'flex';
+  uploadCard.style.flexDirection = 'column';
+
+  const uploadCardTitle = document.createElement('div');
+  uploadCardTitle.style.display = 'flex';
+  uploadCardTitle.style.justifyContent = 'space-between';
+  uploadCardTitle.style.alignItems = 'center';
+  uploadCardTitle.style.marginBottom = '4px';
+
+  const uploadTitleText = document.createElement('span');
+  uploadTitleText.style.fontWeight = '600';
+  uploadTitleText.style.fontSize = '0.9rem';
+  uploadTitleText.textContent = 'Upload File (.txt, .md)';
+
+  const uploadLimitBadge = document.createElement('span');
+  uploadLimitBadge.className = 'badge badge-warning';
+  uploadLimitBadge.textContent = 'Max 10 KB each';
+  uploadCardTitle.appendChild(uploadTitleText);
+  uploadCardTitle.appendChild(uploadLimitBadge);
+
+  const uploadCardHint = document.createElement('div');
+  uploadCardHint.className = 'form-hint';
+  uploadCardHint.style.marginBottom = '12px';
+  uploadCardHint.textContent = 'Upload a plain text or markdown document (consumes 1 of your 2 knowledge slots).';
+
+  const uploadZone = document.createElement('div');
+  uploadZone.className = 'upload-zone';
+  uploadZone.id = 'upload-zone';
+  uploadZone.setAttribute('role', 'button');
+  uploadZone.setAttribute('tabindex', '0');
+  uploadZone.setAttribute('aria-label', 'Upload knowledge file (max 10 KB)');
+
+  const fileInput = document.createElement('input');
+  fileInput.type = 'file';
+  fileInput.accept = '.txt,.md';
+  fileInput.id = 'knowledge-file-input';
+  fileInput.setAttribute('aria-label', 'Choose a .txt or .md file up to 10 KB');
+
+  uploadZone.innerHTML = `
+    <div class="upload-zone-icon">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <polyline points="16 16 12 12 8 16"></polyline>
+        <line x1="12" y1="12" x2="12" y2="21"></line>
+        <path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"></path>
+      </svg>
+    </div>
+    <div class="upload-zone-text">Click to upload or drag and drop</div>
+    <div class="upload-zone-hint">Supported: .txt, .md — Maximum 10 KB</div>
+  `;
+  uploadZone.appendChild(fileInput);
+
+  const uploadStatus = document.createElement('div');
+  uploadStatus.style.marginTop = '8px';
+  uploadStatus.style.fontSize = '0.8125rem';
+  uploadStatus.id = 'upload-status';
+
+  uploadCard.appendChild(uploadCardTitle);
+  uploadCard.appendChild(uploadCardHint);
+  uploadCard.appendChild(uploadZone);
+  uploadCard.appendChild(uploadStatus);
+  inputGrid.appendChild(uploadCard);
+
+  // --------------------------------------------------------------------------
+  // Panel B: Direct Text Input (Max 2,000 characters)
+  // --------------------------------------------------------------------------
+  const textCard = document.createElement('div');
+  textCard.className = 'card';
+  textCard.style.padding = '16px';
+  textCard.style.display = 'flex';
+  textCard.style.flexDirection = 'column';
+
+  const textCardTitle = document.createElement('div');
+  textCardTitle.style.display = 'flex';
+  textCardTitle.style.justifyContent = 'space-between';
+  textCardTitle.style.alignItems = 'center';
+  textCardTitle.style.marginBottom = '4px';
+
+  const textTitleText = document.createElement('span');
+  textTitleText.style.fontWeight = '600';
+  textTitleText.style.fontSize = '0.9rem';
+  textTitleText.textContent = 'Add Direct Text';
+
+  const textLimitBadge = document.createElement('span');
+  textLimitBadge.className = 'badge badge-warning';
+  textLimitBadge.textContent = 'Max 2,000 chars each';
+  textCardTitle.appendChild(textTitleText);
+  textCardTitle.appendChild(textLimitBadge);
+
+  const textCardHint = document.createElement('div');
+  textCardHint.className = 'form-hint';
+  textCardHint.style.marginBottom = '12px';
+  textCardHint.textContent = 'Type or paste knowledge text directly (consumes 1 of your 2 knowledge slots).';
+
+  const textLabelInput = document.createElement('input');
+  textLabelInput.type = 'text';
+  textLabelInput.className = 'input';
+  textLabelInput.id = 'direct-text-label';
+  textLabelInput.placeholder = 'Title / Label (optional, e.g. Return Policy, FAQ)';
+  textLabelInput.maxLength = 100;
+  textLabelInput.style.marginBottom = '8px';
+
+  const textInput = document.createElement('textarea');
+  textInput.className = 'input';
+  textInput.id = 'direct-text-content';
+  textInput.placeholder = 'Paste or type factual information here…';
+  textInput.maxLength = MAX_TEXT_CHARS;
+  textInput.style.minHeight = '80px';
+  textInput.style.resize = 'vertical';
+
+  const textCharCount = document.createElement('div');
+  textCharCount.className = 'char-count';
+  textCharCount.id = 'direct-text-char-count';
+  textCharCount.textContent = `0 / ${MAX_TEXT_CHARS} characters`;
+
+  textInput.addEventListener('input', () => {
+    textCharCount.textContent = `${textInput.value.length} / ${MAX_TEXT_CHARS} characters`;
+  });
+
+  const textActionRow = document.createElement('div');
+  textActionRow.style.display = 'flex';
+  textActionRow.style.justifyContent = 'space-between';
+  textActionRow.style.alignItems = 'center';
+  textActionRow.style.marginTop = '8px';
+
+  const addTextBtn = document.createElement('button');
+  addTextBtn.className = 'btn btn-secondary btn-sm';
+  addTextBtn.id = 'add-text-btn';
+  addTextBtn.textContent = '+ Add Text Source';
+
+  textActionRow.appendChild(textCharCount);
+  textActionRow.appendChild(addTextBtn);
+
+  const textStatus = document.createElement('div');
+  textStatus.style.marginTop = '8px';
+  textStatus.style.fontSize = '0.8125rem';
+  textStatus.id = 'text-status';
+
+  textCard.appendChild(textCardTitle);
+  textCard.appendChild(textCardHint);
+  textCard.appendChild(textLabelInput);
+  textCard.appendChild(textInput);
+  textCard.appendChild(textActionRow);
+  textCard.appendChild(textStatus);
+  inputGrid.appendChild(textCard);
+  body.appendChild(inputGrid);
 
   // Smart Enrichment Opt-in
   const enrichmentSection = document.createElement('div');
@@ -383,78 +551,68 @@ function buildKnowledgeSection(bot, initialSources, pageContainer) {
 
   body.appendChild(enrichmentSection);
 
-  // Upload zone
-  const uploadSection = document.createElement('div');
-  uploadSection.style.marginTop = '16px';
-
-  const uploadZone = document.createElement('div');
-  uploadZone.className = 'upload-zone';
-  uploadZone.id = 'upload-zone';
-  uploadZone.setAttribute('role', 'button');
-  uploadZone.setAttribute('tabindex', '0');
-  uploadZone.setAttribute('aria-label', 'Upload knowledge file');
-
-  const fileInput = document.createElement('input');
-  fileInput.type = 'file';
-  fileInput.accept = '.txt,.md';
-  fileInput.id = 'knowledge-file-input';
-  fileInput.setAttribute('aria-label', 'Choose a .txt or .md file');
-
-  uploadZone.innerHTML = `
-    <div class="upload-zone-icon">
-      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <polyline points="16 16 12 12 8 16"></polyline>
-        <line x1="12" y1="12" x2="12" y2="21"></line>
-        <path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"></path>
-      </svg>
-    </div>
-    <div class="upload-zone-text">Click to upload or drag and drop</div>
-    <div class="upload-zone-hint">Supported: .txt, .md — Max 3 MB per file</div>
-  `;
-  uploadZone.appendChild(fileInput);
-  uploadSection.appendChild(uploadZone);
-
-  // Upload status message
-  const uploadStatus = document.createElement('div');
-  uploadStatus.style.marginTop = '10px';
-  uploadStatus.style.fontSize = '0.875rem';
-  uploadStatus.id = 'upload-status';
-  uploadSection.appendChild(uploadStatus);
-
-  body.appendChild(uploadSection);
+  // Source list
+  const sourceListEl = document.createElement('div');
+  sourceListEl.className = 'source-list';
+  sourceListEl.id = 'source-list';
+  body.appendChild(sourceListEl);
   section.appendChild(body);
 
   // --- State ---
   let sources = [...initialSources];
 
-  function totalBytes() { return sources.reduce((s, src) => s + src.byte_size, 0); }
-
   function refreshUsage() {
     usageSummaryEl.innerHTML = '';
-    const used = totalBytes();
-    const pct = Math.min(100, Math.round((used / MAX_TOTAL_BYTES) * 100));
-    const dangerous = pct >= 90;
-    const warning = pct >= 70;
+    const usedSlots = sources.length;
+    const remainingSlots = Math.max(0, MAX_SOURCES - usedSlots);
+    const atLimit = usedSlots >= MAX_SOURCES;
 
     const labelRow = document.createElement('div');
     labelRow.className = 'usage-label';
     const leftLabel = document.createElement('span');
-    leftLabel.textContent = `Knowledge (${sources.length} / ${MAX_SOURCES} sources)`;
+    leftLabel.id = 'kb-slots-used-text';
+    leftLabel.textContent = `${usedSlots} / ${MAX_SOURCES} knowledge sources used (${remainingSlots} slot${remainingSlots === 1 ? '' : 's'} remaining)`;
     const rightLabel = document.createElement('span');
-    rightLabel.textContent = `${formatBytes(used)} / ${formatBytes(MAX_TOTAL_BYTES)}`;
+    rightLabel.textContent = atLimit ? 'Limit reached (2/2)' : `${remainingSlots} slot${remainingSlots === 1 ? '' : 's'} available`;
     labelRow.appendChild(leftLabel);
     labelRow.appendChild(rightLabel);
 
     const bar = document.createElement('div');
     bar.className = 'usage-bar';
     const fill = document.createElement('div');
-    fill.className = 'usage-bar-fill' + (dangerous ? ' danger' : warning ? ' warning' : '');
+    const pct = Math.min(100, Math.round((usedSlots / MAX_SOURCES) * 100));
+    fill.className = 'usage-bar-fill' + (atLimit ? ' danger' : usedSlots === 1 ? ' warning' : '');
     fill.style.width = pct + '%';
     bar.appendChild(fill);
 
     usageSummaryEl.appendChild(labelRow);
     usageSummaryEl.appendChild(bar);
     usageSummaryEl.style.marginBottom = '16px';
+  }
+
+  function refreshInputsState() {
+    const atLimit = sources.length >= MAX_SOURCES;
+    limitBanner.style.display = atLimit ? 'block' : 'none';
+
+    // File upload
+    uploadZone.style.opacity = atLimit ? '0.5' : '1';
+    uploadZone.style.pointerEvents = atLimit ? 'none' : '';
+    fileInput.disabled = atLimit;
+    if (atLimit) {
+      uploadZone.setAttribute('aria-disabled', 'true');
+    } else {
+      uploadZone.removeAttribute('aria-disabled');
+    }
+
+    // Direct text
+    textInput.disabled = atLimit;
+    textLabelInput.disabled = atLimit;
+    addTextBtn.disabled = atLimit;
+    if (atLimit) {
+      addTextBtn.setAttribute('aria-disabled', 'true');
+    } else {
+      addTextBtn.removeAttribute('aria-disabled');
+    }
   }
 
   function refreshSourceList() {
@@ -464,7 +622,7 @@ function buildKnowledgeSection(bot, initialSources, pageContainer) {
       empty.className = 'form-hint';
       empty.style.textAlign = 'center';
       empty.style.padding = '12px 0';
-      empty.textContent = 'No knowledge sources yet. Add knowledge so your bot can answer questions about your content.';
+      empty.textContent = 'No knowledge sources yet. Add up to 2 sources in any combination (2 files, 1 file + 1 text source, or 2 text sources) so your bot can answer questions about your content.';
       sourceListEl.appendChild(empty);
       return;
     }
@@ -478,7 +636,8 @@ function buildKnowledgeSection(bot, initialSources, pageContainer) {
     item.className = 'source-item';
     item.dataset.sourceId = src.id;
 
-    const ext = (src.filename || '').toLowerCase().endsWith('.md') ? 'MD' : 'TXT';
+    const isText = src.source_type === 'text';
+    const ext = isText ? 'TXT' : (src.filename || '').toLowerCase().endsWith('.md') ? 'MD' : 'TXT';
     const icon = document.createElement('div');
     icon.className = 'source-icon';
     icon.textContent = ext; // safe
@@ -487,7 +646,8 @@ function buildKnowledgeSection(bot, initialSources, pageContainer) {
     info.className = 'source-info';
     const nameEl = document.createElement('div');
     nameEl.className = 'source-name';
-    nameEl.textContent = src.filename; // XSS safe — filename is user-uploaded
+    nameEl.textContent = src.filename; // XSS safe
+
     const metaEl = document.createElement('div');
     metaEl.className = 'source-meta';
     
@@ -502,14 +662,15 @@ function buildKnowledgeSection(bot, initialSources, pageContainer) {
       enrichStatusText = ' · Smart enrichment: Failed. Your original knowledge is still available for normal search.';
     }
 
-    metaEl.textContent = `${formatBytes(src.byte_size)} · ${src.chunk_count} chunk${src.chunk_count !== 1 ? 's' : ''}${enrichStatusText}`;
+    const typeLabel = isText ? 'Direct text' : 'Uploaded file';
+    metaEl.textContent = `${formatBytes(src.byte_size)} · ${src.chunk_count} chunk${src.chunk_count !== 1 ? 's' : ''} · ${typeLabel}${enrichStatusText}`;
 
     info.appendChild(nameEl);
     info.appendChild(metaEl);
 
     const delBtn = document.createElement('button');
     delBtn.className = 'btn btn-ghost btn-sm btn-icon';
-    delBtn.setAttribute('aria-label', 'Delete ' + src.filename); // safe via setAttribute
+    delBtn.setAttribute('aria-label', 'Delete ' + src.filename);
     delBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14H6L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M9 6V4h6v2"></path></svg>`;
     delBtn.style.color = 'var(--danger-500)';
 
@@ -519,6 +680,7 @@ function buildKnowledgeSection(bot, initialSources, pageContainer) {
       sources = sources.filter(s => s.id !== src.id);
       refreshUsage();
       refreshSourceList();
+      refreshInputsState();
       showToast('Source deleted.', 'success');
     }));
 
@@ -528,26 +690,22 @@ function buildKnowledgeSection(bot, initialSources, pageContainer) {
     return item;
   }
 
-  // Initial render
-  refreshUsage();
-  refreshSourceList();
-
   // --- Upload handling ---
   async function handleUpload(file) {
     if (!file) return;
 
-    // Client-side validations (server is authoritative)
+    if (sources.length >= MAX_SOURCES) {
+      showUploadStatus('Maximum of 2 knowledge sources reached. Delete an existing source first.', 'error');
+      return;
+    }
+
     const name = file.name.toLowerCase();
     if (!name.endsWith('.txt') && !name.endsWith('.md')) {
       showUploadStatus("This file type isn't supported yet. Please upload a .txt or .md file.", 'error');
       return;
     }
     if (file.size > MAX_UPLOAD_BYTES) {
-      showUploadStatus('That file is too large. Maximum upload size is 3 MB.', 'error');
-      return;
-    }
-    if (sources.length >= MAX_SOURCES) {
-      showUploadStatus('Maximum number of knowledge sources reached (10).', 'error');
+      showUploadStatus(`"${file.name}" exceeds the 10 KB maximum limit (${(file.size / 1024).toFixed(1)} KB). Please choose a file under 10 KB.`, 'error');
       return;
     }
 
@@ -555,7 +713,7 @@ function buildKnowledgeSection(bot, initialSources, pageContainer) {
     uploadZone.style.pointerEvents = 'none';
     fileInput.disabled = true;
 
-    const isEnrichmentEnabled = document.getElementById('enrichment-checkbox').checked;
+    const isEnrichmentEnabled = !!document.getElementById('enrichment-checkbox')?.checked;
     const res = await uploadKnowledge(bot.id, file, isEnrichmentEnabled);
 
     uploadZone.style.pointerEvents = '';
@@ -570,25 +728,76 @@ function buildKnowledgeSection(bot, initialSources, pageContainer) {
     sources.unshift(res.data);
     refreshUsage();
     refreshSourceList();
+    refreshInputsState();
     showUploadStatus(`"${file.name}" uploaded successfully (${res.data.chunk_count} chunks).`, 'success');
 
-    // If enrichment was requested, kick off status polling immediately
-    // so the user sees the status update without a manual page refresh.
     section._startPolling?.();
   }
 
   function showUploadStatus(msg, type) {
-    uploadStatus.textContent = msg; // XSS safe
+    uploadStatus.textContent = msg;
     uploadStatus.style.color = type === 'error' ? 'var(--danger-600)'
       : type === 'success' ? 'var(--success-600)'
       : 'var(--neutral-500)';
   }
 
+  // --- Direct Text handling ---
+  async function handleAddText() {
+    const text = textInput.value;
+    const label = textLabelInput.value;
+
+    if (sources.length >= MAX_SOURCES) {
+      showTextStatus('Maximum of 2 knowledge sources reached. Delete an existing source first.', 'error');
+      return;
+    }
+    if (!text || text.trim().length === 0) {
+      showTextStatus('Please enter some text content.', 'error');
+      return;
+    }
+    if (text.length > MAX_TEXT_CHARS) {
+      showTextStatus(`Knowledge text must not exceed ${MAX_TEXT_CHARS} characters per source.`, 'error');
+      return;
+    }
+
+    showTextStatus('Saving text source…', 'loading');
+    addTextBtn.disabled = true;
+    textInput.disabled = true;
+    textLabelInput.disabled = true;
+
+    const res = await addTextKnowledge(bot.id, text.trim(), label.trim());
+
+    addTextBtn.disabled = false;
+    textInput.disabled = false;
+    textLabelInput.disabled = false;
+
+    if (!res.ok) {
+      showTextStatus(res.error, 'error');
+      return;
+    }
+
+    sources.unshift(res.data);
+    refreshUsage();
+    refreshSourceList();
+    refreshInputsState();
+
+    textInput.value = '';
+    textLabelInput.value = '';
+    textCharCount.textContent = `0 / ${MAX_TEXT_CHARS} characters`;
+    showTextStatus('Text source added successfully.', 'success');
+  }
+
+  function showTextStatus(msg, type) {
+    textStatus.textContent = msg;
+    textStatus.style.color = type === 'error' ? 'var(--danger-600)'
+      : type === 'success' ? 'var(--success-600)'
+      : 'var(--neutral-500)';
+  }
+
+  // Event Listeners
   fileInput.addEventListener('change', () => {
     if (fileInput.files?.[0]) handleUpload(fileInput.files[0]);
   });
 
-  // Drag and drop
   uploadZone.addEventListener('dragover', (e) => { e.preventDefault(); uploadZone.classList.add('drag-over'); });
   uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('drag-over'));
   uploadZone.addEventListener('drop', (e) => {
@@ -598,19 +807,23 @@ function buildKnowledgeSection(bot, initialSources, pageContainer) {
     if (file) handleUpload(file);
   });
 
-  // Keyboard access for upload zone
   uploadZone.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInput.click(); }
   });
 
+  addTextBtn.addEventListener('click', handleAddText);
+
+  // Initial render
+  refreshUsage();
+  refreshSourceList();
+  refreshInputsState();
+
   // Expose a refresh hook for enrichment-status polling.
-  // renderBot() calls section._refreshSources(newSources) while any source is
-  // queued/processing. Updates internal state and re-renders only the source
-  // list and usage bar — not the whole page.
   section._refreshSources = function(newSources) {
     sources = newSources;
     refreshUsage();
     refreshSourceList();
+    refreshInputsState();
   };
 
   return section;

@@ -18,10 +18,15 @@ function normaliseError(status, body) {
     if (msg.includes('bot')) return "This bot has reached its daily message limit. Please try again tomorrow.";
     return 'Too many requests. Please try again later.';
   }
-  if (status === 413) return body?.message?.includes('total') 
-    ? 'Upload would exceed your total knowledge limit (5 MB).'
-    : 'That file is too large. Maximum upload size is 3 MB.';
-  if (status === 409) return 'Maximum number of knowledge sources reached (10).';
+  if (status === 403) {
+    if (body?.error === 'bot_limit_reached') return body.message || 'You have reached the limit of 1 chatbot per account.';
+  }
+  if (status === 413) {
+    return body?.message || 'That file is too large. Maximum file size is 10 KB.';
+  }
+  if (status === 409) {
+    return body?.message || 'Maximum of 2 knowledge source slots reached. Delete an existing source to add a new one.';
+  }
 
   const msg = body?.message;
   if (!msg) return `An unexpected error occurred (${status}).`;
@@ -33,9 +38,15 @@ function normaliseError(status, body) {
     invalid_credentials: 'Invalid email or password.',
     unsupported_type: 'This file type isn\'t supported yet. Please upload a .txt or .md file.',
     empty_file: 'That file appears to be empty.',
+    empty_text: 'Text contains no usable content.',
     message_too_long: 'Your message is too long. Please shorten it.',
     invalid_name: 'Bot name is required and must be under 100 characters.',
     no_knowledge: 'This bot has no knowledge yet. Add some content first.',
+    bot_limit_reached: 'You have reached the limit of 1 chatbot per account.',
+    too_many_sources: 'Maximum of 2 knowledge source slots reached. Delete an existing source to add a new one.',
+    text_too_long: 'Knowledge text must not exceed 2,000 characters per source.',
+    invalid_system_prompt: 'Bot owner instructions must not exceed 2,000 characters.',
+    payload_too_large: 'File exceeds the maximum size of 10 KB per file.',
     rate_limited: msg,
     not_found: 'Not found.',
   };
@@ -155,6 +166,10 @@ export async function uploadKnowledge(botId, file, enrichment = false) {
 
 export async function deleteKnowledge(botId, sourceId) {
   return request('DELETE', `/api/bots/${encodeURIComponent(botId)}/knowledge/${encodeURIComponent(sourceId)}`);
+}
+
+export async function addTextKnowledge(botId, text, label) {
+  return request('POST', `/api/bots/${encodeURIComponent(botId)}/knowledge/text`, { text, label });
 }
 
 // --------------------------------------------------------------------------

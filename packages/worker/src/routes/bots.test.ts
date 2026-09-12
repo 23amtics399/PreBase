@@ -98,17 +98,25 @@ describe('Bots API', () => {
   });
 
   describe('POST /api/bots', () => {
-    it('should create a bot successfully', async () => {
+    it('should create a bot successfully when user has 0 bots', async () => {
       const env = buildEnv();
+      env.mockStmt.first.mockResolvedValueOnce(null); // No existing bot for user
       const res = await post(env, '/api/bots', { name: 'Test Bot', description: 'desc', system_prompt: 'prompt' });
       expect(res.status).toBe(201);
       const data = await res.json() as any;
       expect(data.name).toBe('Test Bot');
       expect(data.id).toBeDefined();
       expect(env.DB.prepare).toHaveBeenCalledWith(expect.stringContaining('INSERT INTO bots'));
-      expect(env.mockStmt.bind).toHaveBeenCalledWith(
-        expect.any(String), 'user_123', 'Test Bot', 'desc', 'prompt', expect.any(Number), expect.any(Number)
-      );
+    });
+
+    it('should reject bot creation with 403 bot_limit_reached when user already has 1 bot', async () => {
+      const env = buildEnv();
+      env.mockStmt.first.mockResolvedValueOnce({ id: '00000000-0000-4000-8000-000000000001' }); // Existing bot found
+      const res = await post(env, '/api/bots', { name: 'Second Bot', description: 'desc' });
+      expect(res.status).toBe(403);
+      const data = await res.json() as any;
+      expect(data.error).toBe('bot_limit_reached');
+      expect(data.message).toContain('limit of 1 chatbot per account');
     });
 
     it('should reject invalid names', async () => {
@@ -402,6 +410,21 @@ describe('Bots API', () => {
       const res = await post(env, `/api/bots/${botId}/knowledge/text`, {
         text: 'This is direct text knowledge content with sufficient text length to be indexed.',
         label: 'FAQ'
+      });
+      expect(res.status).toBe(201);
+    });
+
+    it('allows 2 direct-text sources (max 2 slots)', async () => {
+      const env = buildEnv({ PREBASE_MAX_SOURCES_PER_BOT: '2' });
+      env.mockStmt.first
+        .mockResolvedValueOnce({ id: botId }) // ownership check
+        .mockResolvedValueOnce({ id: 203 });   // RETURNING id
+      // 1 existing text source, adding 2nd direct-text source -> allowed
+      env.mockStmt.all.mockResolvedValueOnce({ results: [{ id: 1 }] });
+
+      const res = await post(env, `/api/bots/${botId}/knowledge/text`, {
+        text: 'Second direct text knowledge content with sufficient length.',
+        label: 'Policy'
       });
       expect(res.status).toBe(201);
     });

@@ -3,7 +3,7 @@
  * All user-controlled values rendered via textContent (XSS safe).
  */
 
-import { getBots, createBot, deleteBot } from '../api.js';
+import { getBots, createBot, deleteBot } from '../api.js?v=4';
 import { showToast } from '../app.js';
 
 export async function renderDashboard(container, navigate) {
@@ -55,8 +55,23 @@ export async function renderDashboard(container, navigate) {
   const bots = res.data?.bots || [];
   renderBotList(listContainer, bots, navigate);
 
-  // Create bot button
-  createBtn.addEventListener('click', () => openCreateModal(navigate));
+  // Create bot button — disabled if user already has 1 bot
+  if (bots.length >= 1) {
+    createBtn.disabled = true;
+    createBtn.setAttribute('aria-disabled', 'true');
+    createBtn.title = 'You have reached the limit of 1 chatbot per account.';
+    createBtn.style.opacity = '0.5';
+    createBtn.style.cursor = 'not-allowed';
+
+    const limitNotice = document.createElement('span');
+    limitNotice.className = 'badge badge-warning';
+    limitNotice.style.marginLeft = '12px';
+    limitNotice.style.fontWeight = '500';
+    limitNotice.textContent = '1/1 Bot Used';
+    h1.appendChild(limitNotice);
+  } else {
+    createBtn.addEventListener('click', () => openCreateModal(navigate));
+  }
 }
 
 // --------------------------------------------------------------------------

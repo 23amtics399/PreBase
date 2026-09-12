@@ -56,8 +56,21 @@ bots.post('/', async (c) => {
     return c.json({ error: 'invalid_system_prompt', message: `Bot owner instructions must not exceed ${maxInstructionsChars} characters.` }, 400);
   }
 
-  const id = crypto.randomUUID();
   const ownerId = c.get('userId');
+
+  // Enforce maximum 1 bot per user in current phase
+  const existingBot = await c.env.DB.prepare(
+    'SELECT id FROM bots WHERE owner_id = ? LIMIT 1'
+  ).bind(ownerId).first<{ id: string }>();
+
+  if (existingBot) {
+    return c.json({
+      error: 'bot_limit_reached',
+      message: 'You have reached the limit of 1 chatbot per account.'
+    }, 403);
+  }
+
+  const id = crypto.randomUUID();
   const now = Math.floor(Date.now() / 1000);
 
   await c.env.DB.prepare(
@@ -456,7 +469,7 @@ bots.post('/:id/knowledge/text', async (c) => {
 
   const maxTextChars = Math.max(1, parseInt(c.env.PREBASE_MAX_KB_TEXT_CHARS ?? '2000', 10));
   if (text.length > maxTextChars) {
-    return c.json({ error: 'text_too_long', message: `Knowledge text must not exceed ${maxTextChars} characters.` }, 400);
+    return c.json({ error: 'text_too_long', message: `Knowledge text must not exceed ${maxTextChars} characters per source.` }, 400);
   }
 
   // Label is an optional display name for this text source (e.g. 'FAQ', 'Policy')
