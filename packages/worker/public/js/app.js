@@ -4,10 +4,10 @@
  * Routes: #login, #register, #dashboard, #bot/<id>
  */
 
-import { getMe, logout } from './api.js?v=4';
-import { renderLogin } from './views/login.js?v=4';
-import { renderDashboard } from './views/dashboard.js?v=4';
-import { renderBot } from './views/bot.js?v=4';
+import { getMe, logout } from './api.js?v=5';
+import { renderLogin } from './views/login.js?v=5';
+import { renderDashboard } from './views/dashboard.js?v=5';
+import { renderBot } from './views/bot.js?v=5';
 
 // --------------------------------------------------------------------------
 // App state (plain object — no framework needed for MVP)

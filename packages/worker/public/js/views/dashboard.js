@@ -3,7 +3,7 @@
  * All user-controlled values rendered via textContent (XSS safe).
  */
 
-import { getBots, createBot, deleteBot } from '../api.js?v=4';
+import { getBots, createBot, deleteBot } from '../api.js?v=5';
 import { showToast } from '../app.js';
 
 export async function renderDashboard(container, navigate) {

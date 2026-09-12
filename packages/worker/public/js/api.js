@@ -49,6 +49,11 @@ function normaliseError(status, body) {
     payload_too_large: 'File exceeds the maximum size of 10 KB per file.',
     rate_limited: msg,
     not_found: 'Not found.',
+    menu_full: 'Maximum of 8 Quick Answers allowed.',
+    label_too_long: 'Label must not exceed 40 characters.',
+    response_too_long: 'Response must not exceed 1,000 characters.',
+    invalid_label: 'Label is required.',
+    invalid_response: 'Response is required.',
   };
 
   return map[code] || msg || `An unexpected error occurred (${status}).`;
@@ -178,4 +183,28 @@ export async function addTextKnowledge(botId, text, label) {
 
 export async function previewChat(botId, message) {
   return request('POST', `/api/bots/${encodeURIComponent(botId)}/chat`, { message });
+}
+
+// --------------------------------------------------------------------------
+// Quick Answers / Fallback Menu
+// --------------------------------------------------------------------------
+
+export async function getMenuItems(botId) {
+  return request('GET', `/api/bots/${encodeURIComponent(botId)}/menu`);
+}
+
+export async function updateMenuSettings(botId, quick_answers_enabled) {
+  return request('PATCH', `/api/bots/${encodeURIComponent(botId)}/menu/settings`, { quick_answers_enabled });
+}
+
+export async function createMenuItem(botId, label, response, display_order) {
+  return request('POST', `/api/bots/${encodeURIComponent(botId)}/menu`, { label, response, display_order });
+}
+
+export async function updateMenuItem(botId, itemId, fields) {
+  return request('PATCH', `/api/bots/${encodeURIComponent(botId)}/menu/${encodeURIComponent(itemId)}`, fields);
+}
+
+export async function deleteMenuItem(botId, itemId) {
+  return request('DELETE', `/api/bots/${encodeURIComponent(botId)}/menu/${encodeURIComponent(itemId)}`);
 }

@@ -7,7 +7,8 @@ import {
   getBot, updateBot, deleteBot,
   getKnowledge, uploadKnowledge, deleteKnowledge, addTextKnowledge,
   previewChat, publishBot, unpublishBot,
-} from '../api.js?v=4';
+  getMenuItems, updateMenuSettings, createMenuItem, updateMenuItem, deleteMenuItem,
+} from '../api.js?v=5';
 import { showToast } from '../app.js';
 
 // Production domain for share/embed links
@@ -18,6 +19,9 @@ const MAX_SOURCES = 2;
 const MAX_UPLOAD_BYTES = 10 * 1024; // 10 KB per file
 const MAX_TEXT_CHARS = 2000; // 2,000 characters per direct text source
 const MAX_INSTRUCTION_CHARS = 2000; // 2,000 characters for system prompt/instructions
+const MAX_MENU_ITEMS = 8;
+const MAX_MENU_LABEL_CHARS = 40;
+const MAX_MENU_RESPONSE_CHARS = 1000;
 
 export async function renderBot(container, botId, navigate) {
   container.innerHTML = '';
@@ -44,8 +48,12 @@ export async function renderBot(container, botId, navigate) {
   loadingEl.innerHTML = `<div class="spinner" aria-hidden="true"></div><span>Loading bot…</span>`;
   container.appendChild(loadingEl);
 
-  // Fetch bot and knowledge in parallel
-  const [botRes, kbRes] = await Promise.all([getBot(botId), getKnowledge(botId)]);
+  // Fetch bot, knowledge, and quick answers in parallel
+  const [botRes, kbRes, menuRes] = await Promise.all([
+    getBot(botId),
+    getKnowledge(botId),
+    getMenuItems(botId)
+  ]);
 
   if (!botRes.ok) {
     loadingEl.remove();
@@ -61,6 +69,10 @@ export async function renderBot(container, botId, navigate) {
   loadingEl.remove();
   const bot = botRes.data;
   const sources = kbRes.ok ? (kbRes.data?.sources || []) : [];
+  const initialMenuItems = menuRes.ok ? (menuRes.data?.items || []) : [];
+  const initialQuickAnswersEnabled = menuRes.ok
+    ? !!menuRes.data?.quick_answers_enabled
+    : (bot.quick_answers_enabled === 1);
 
   // Page header
   const header = document.createElement('div');
@@ -81,6 +93,7 @@ export async function renderBot(container, botId, navigate) {
   container.appendChild(buildInstructionsSection(bot));
   const knowledgeSection = buildKnowledgeSection(bot, sources, container);
   container.appendChild(knowledgeSection);
+  container.appendChild(buildQuickAnswersSection(bot, initialMenuItems, initialQuickAnswersEnabled));
   container.appendChild(buildPreviewSection(bot));
   container.appendChild(buildPublishSection(bot, navigate));
 
@@ -830,7 +843,562 @@ function buildKnowledgeSection(bot, initialSources, pageContainer) {
 }
 
 // ==========================================================================
-// SECTION 4: Preview Chat
+// SECTION 4: Quick Answers / Fallback Menu
+// ==========================================================================
+function buildQuickAnswersSection(bot, initialItems = [], initialEnabled = false) {
+  const section = document.createElement('div');
+  section.className = 'section';
+  section.id = 'quick-answers-section';
+
+  const hdr = document.createElement('div');
+  hdr.className = 'section-header';
+  const titleDiv = document.createElement('div');
+  const t = document.createElement('div');
+  t.className = 'section-title';
+  t.textContent = 'Quick Answers / Fallback Menu';
+  const sub = document.createElement('div');
+  sub.className = 'section-subtitle';
+  sub.textContent = 'Configure owner-authored responses shown as interactive chips for visitors and as a guaranteed fallback when AI quota is exhausted.';
+  titleDiv.appendChild(t);
+  titleDiv.appendChild(sub);
+  hdr.appendChild(titleDiv);
+  section.appendChild(hdr);
+
+  const body = document.createElement('div');
+  body.className = 'section-body';
+
+  // Explanatory Notice
+  const notice = document.createElement('div');
+  notice.className = 'alert alert-info';
+  notice.style.marginBottom = '20px';
+  notice.textContent =
+    'Quick Answers provide instant, reliable replies written directly by you that consume zero AI quota. When your daily AI limit is reached, visitors are presented with these options so your chat widget is never left dead or unresponsive. PreBase provides the interface and tooling, but does not author or verify your response content.';
+  body.appendChild(notice);
+
+  // State
+  let items = Array.isArray(initialItems) ? [...initialItems] : [];
+  let isEnabled = !!initialEnabled;
+
+  // Enable/Disable Toggle Card
+  const toggleCard = document.createElement('div');
+  toggleCard.className = 'quick-answers-toggle-card';
+
+  const toggleInfo = document.createElement('div');
+  toggleInfo.className = 'quick-answers-toggle-info';
+  const toggleTitle = document.createElement('div');
+  toggleTitle.className = 'quick-answers-toggle-title';
+  toggleTitle.textContent = 'Enable Quick Answers in Chat Widget';
+  const toggleDesc = document.createElement('div');
+  toggleDesc.className = 'quick-answers-toggle-desc';
+  toggleDesc.textContent =
+    'When enabled, clickable chips appear above the message input during normal chat. When disabled, normal AI chat operates without chips, but your configured answers remain available as an automated fallback if daily AI quota is exhausted.';
+  toggleInfo.appendChild(toggleTitle);
+  toggleInfo.appendChild(toggleDesc);
+
+  const toggleRight = document.createElement('div');
+  toggleRight.style.display = 'flex';
+  toggleRight.style.alignItems = 'center';
+  toggleRight.style.gap = '12px';
+
+  const statusBadge = document.createElement('span');
+  function updateBadge() {
+    statusBadge.className = isEnabled ? 'badge badge-public' : 'badge badge-private';
+    statusBadge.innerHTML = `<span class="badge-dot" aria-hidden="true"></span>${isEnabled ? 'Active' : 'Disabled'}`;
+  }
+  updateBadge();
+
+  const toggleLabel = document.createElement('label');
+  toggleLabel.className = 'check-item';
+  toggleLabel.style.margin = '0';
+  toggleLabel.style.cursor = 'pointer';
+
+  const toggleInput = document.createElement('input');
+  toggleInput.type = 'checkbox';
+  toggleInput.id = 'quick-answers-toggle';
+  toggleInput.checked = isEnabled;
+  toggleInput.setAttribute('aria-label', 'Toggle Quick Answers in widget');
+
+  toggleInput.addEventListener('change', async () => {
+    const desiredState = toggleInput.checked;
+    toggleInput.disabled = true;
+    const res = await updateMenuSettings(bot.id, desiredState);
+    toggleInput.disabled = false;
+    if (res.ok) {
+      isEnabled = desiredState;
+      bot.quick_answers_enabled = isEnabled ? 1 : 0;
+      updateBadge();
+      showToast(isEnabled ? 'Quick Answers enabled in widget.' : 'Quick Answers disabled in widget.', 'success');
+    } else {
+      toggleInput.checked = isEnabled; // revert
+      showToast(res.error || 'Failed to update Quick Answers setting.', 'error');
+    }
+  });
+
+  toggleLabel.appendChild(toggleInput);
+  toggleRight.appendChild(statusBadge);
+  toggleRight.appendChild(toggleLabel);
+  toggleCard.appendChild(toggleInfo);
+  toggleCard.appendChild(toggleRight);
+  body.appendChild(toggleCard);
+
+  // Header Row: Counter & Add Button
+  const headerRow = document.createElement('div');
+  headerRow.className = 'quick-answers-header-row';
+
+  const headerLeft = document.createElement('div');
+  headerLeft.style.display = 'flex';
+  headerLeft.style.alignItems = 'center';
+  headerLeft.style.gap = '10px';
+
+  const listTitle = document.createElement('div');
+  listTitle.style.fontWeight = '600';
+  listTitle.style.fontSize = '0.9375rem';
+  listTitle.style.color = 'var(--neutral-900)';
+  listTitle.textContent = 'Configured Answers';
+
+  const countBadge = document.createElement('span');
+  countBadge.className = 'quick-answers-count-badge';
+  countBadge.id = 'quick-answers-count-badge';
+
+  headerLeft.appendChild(listTitle);
+  headerLeft.appendChild(countBadge);
+
+  const addBtn = document.createElement('button');
+  addBtn.className = 'btn btn-primary btn-sm';
+  addBtn.id = 'add-quick-answer-btn';
+  addBtn.textContent = '+ Add Quick Answer';
+  addBtn.addEventListener('click', () => {
+    if (items.length >= MAX_MENU_ITEMS) {
+      showToast(`Maximum of ${MAX_MENU_ITEMS} Quick Answers allowed.`, 'error');
+      return;
+    }
+    openMenuItemModal(bot, null, (newItem) => {
+      items.push(newItem);
+      renderList();
+    });
+  });
+
+  headerRow.appendChild(headerLeft);
+  headerRow.appendChild(addBtn);
+  body.appendChild(headerRow);
+
+  // Items List Container
+  const listContainer = document.createElement('div');
+  listContainer.className = 'quick-answers-list';
+  listContainer.id = 'quick-answers-list';
+  body.appendChild(listContainer);
+
+  function renderList() {
+    listContainer.innerHTML = '';
+    const count = items.length;
+    countBadge.textContent = `${count} / ${MAX_MENU_ITEMS} configured`;
+    addBtn.disabled = count >= MAX_MENU_ITEMS;
+
+    if (count === 0) {
+      const emptyCard = document.createElement('div');
+      emptyCard.className = 'quick-answers-empty';
+      emptyCard.id = 'quick-answers-empty';
+      const emptyTitle = document.createElement('div');
+      emptyTitle.className = 'quick-answers-empty-title';
+      emptyTitle.textContent = 'No Quick Answers configured yet';
+      const emptyDesc = document.createElement('div');
+      emptyDesc.className = 'quick-answers-empty-desc';
+      emptyDesc.textContent =
+        'Add common questions (such as Shipping Info, Support Hours, or Return Policy) so visitors get immediate answers without consuming AI quota.';
+      emptyCard.appendChild(emptyTitle);
+      emptyCard.appendChild(emptyDesc);
+      listContainer.appendChild(emptyCard);
+      return;
+    }
+
+    // Sort by display_order
+    items.sort((a, b) => (a.display_order ?? 0) - (b.display_order ?? 0));
+
+    items.forEach((item, index) => {
+      const card = document.createElement('div');
+      card.className = 'quick-answer-item-card';
+      card.id = `quick-answer-item-${item.id}`;
+
+      // Left main
+      const mainDiv = document.createElement('div');
+      mainDiv.className = 'quick-answer-item-main';
+
+      const orderPill = document.createElement('span');
+      orderPill.className = 'quick-answer-item-order';
+      orderPill.textContent = `#${index + 1}`;
+
+      const contentDiv = document.createElement('div');
+      contentDiv.className = 'quick-answer-item-content';
+
+      const labelEl = document.createElement('div');
+      labelEl.className = 'quick-answer-item-label';
+      labelEl.textContent = item.label;
+
+      const responseEl = document.createElement('div');
+      responseEl.className = 'quick-answer-item-response';
+      responseEl.textContent = item.response;
+
+      contentDiv.appendChild(labelEl);
+      contentDiv.appendChild(responseEl);
+      mainDiv.appendChild(orderPill);
+      mainDiv.appendChild(contentDiv);
+
+      // Right actions
+      const actionsDiv = document.createElement('div');
+      actionsDiv.className = 'quick-answer-item-actions';
+
+      // Move Up button
+      const upBtn = document.createElement('button');
+      upBtn.className = 'btn btn-secondary btn-sm btn-move-up';
+      upBtn.title = 'Move Up';
+      upBtn.setAttribute('aria-label', `Move ${item.label} up`);
+      upBtn.textContent = '↑';
+      upBtn.disabled = index === 0;
+      upBtn.addEventListener('click', async () => {
+        if (index === 0) return;
+        const prev = items[index - 1];
+        const newOrderCurrent = prev.display_order ?? (index - 1);
+        const newOrderPrev = item.display_order ?? index;
+
+        upBtn.disabled = true;
+        item.display_order = newOrderCurrent;
+        prev.display_order = newOrderPrev;
+        items[index - 1] = item;
+        items[index] = prev;
+        renderList();
+
+        await Promise.all([
+          updateMenuItem(bot.id, item.id, { display_order: item.display_order }),
+          updateMenuItem(bot.id, prev.id, { display_order: prev.display_order }),
+        ]);
+      });
+
+      // Move Down button
+      const downBtn = document.createElement('button');
+      downBtn.className = 'btn btn-secondary btn-sm btn-move-down';
+      downBtn.title = 'Move Down';
+      downBtn.setAttribute('aria-label', `Move ${item.label} down`);
+      downBtn.textContent = '↓';
+      downBtn.disabled = index === items.length - 1;
+      downBtn.addEventListener('click', async () => {
+        if (index === items.length - 1) return;
+        const next = items[index + 1];
+        const newOrderCurrent = next.display_order ?? (index + 1);
+        const newOrderNext = item.display_order ?? index;
+
+        downBtn.disabled = true;
+        item.display_order = newOrderCurrent;
+        next.display_order = newOrderNext;
+        items[index + 1] = item;
+        items[index] = next;
+        renderList();
+
+        await Promise.all([
+          updateMenuItem(bot.id, item.id, { display_order: item.display_order }),
+          updateMenuItem(bot.id, next.id, { display_order: next.display_order }),
+        ]);
+      });
+
+      // Edit button
+      const editBtn = document.createElement('button');
+      editBtn.className = 'btn btn-secondary btn-sm btn-edit-answer';
+      editBtn.textContent = 'Edit';
+      editBtn.setAttribute('aria-label', `Edit ${item.label}`);
+      editBtn.addEventListener('click', () => {
+        openMenuItemModal(bot, item, (updatedItem) => {
+          Object.assign(item, updatedItem);
+          renderList();
+        });
+      });
+
+      // Delete button
+      const delBtn = document.createElement('button');
+      delBtn.className = 'btn btn-danger btn-sm btn-delete-answer';
+      delBtn.textContent = 'Delete';
+      delBtn.setAttribute('aria-label', `Delete ${item.label}`);
+      delBtn.addEventListener('click', () => {
+        openDeleteMenuItemModal(bot, item, () => {
+          items = items.filter(x => x.id !== item.id);
+          renderList();
+        });
+      });
+
+      actionsDiv.appendChild(upBtn);
+      actionsDiv.appendChild(downBtn);
+      actionsDiv.appendChild(editBtn);
+      actionsDiv.appendChild(delBtn);
+
+      card.appendChild(mainDiv);
+      card.appendChild(actionsDiv);
+      listContainer.appendChild(card);
+    });
+  }
+
+  renderList();
+  section.appendChild(body);
+  return section;
+}
+
+function openMenuItemModal(bot, existingItem, onSaved) {
+  const isEdit = !!existingItem;
+  const backdrop = document.createElement('div');
+  backdrop.className = 'modal-backdrop';
+
+  const modal = document.createElement('div');
+  modal.className = 'modal';
+  modal.style.maxWidth = '560px';
+
+  const hdr = document.createElement('div');
+  hdr.className = 'modal-header';
+  const title = document.createElement('h2');
+  title.className = 'modal-title';
+  title.textContent = isEdit ? 'Edit Quick Answer' : 'Add Quick Answer';
+  hdr.appendChild(title);
+
+  const body = document.createElement('div');
+  body.className = 'modal-body';
+
+  const hint = document.createElement('div');
+  hint.className = 'form-hint';
+  hint.style.marginBottom = '16px';
+  hint.textContent = 'Quick Answers are returned verbatim to visitors without consuming AI quota.';
+  body.appendChild(hint);
+
+  // Label group
+  const labelGroup = document.createElement('div');
+  labelGroup.className = 'form-group';
+  const labelLabel = document.createElement('label');
+  labelLabel.htmlFor = 'menu-item-label';
+  labelLabel.textContent = 'Button Label';
+  const labelInput = document.createElement('input');
+  labelInput.type = 'text';
+  labelInput.id = 'menu-item-label';
+  labelInput.className = 'input';
+  labelInput.maxLength = MAX_MENU_LABEL_CHARS;
+  labelInput.placeholder = 'e.g. Shipping Info, Return Policy, Store Hours';
+  labelInput.value = existingItem ? existingItem.label : '';
+
+  const labelCharCount = document.createElement('div');
+  labelCharCount.className = 'char-count';
+  labelCharCount.id = 'menu-label-char-count';
+  labelCharCount.textContent = `${labelInput.value.length} / ${MAX_MENU_LABEL_CHARS} characters`;
+  labelInput.addEventListener('input', () => {
+    labelCharCount.textContent = `${labelInput.value.length} / ${MAX_MENU_LABEL_CHARS} characters`;
+  });
+
+  labelGroup.appendChild(labelLabel);
+  labelGroup.appendChild(labelInput);
+  labelGroup.appendChild(labelCharCount);
+  body.appendChild(labelGroup);
+
+  // Response group
+  const respGroup = document.createElement('div');
+  respGroup.className = 'form-group';
+  const respLabel = document.createElement('label');
+  respLabel.htmlFor = 'menu-item-response';
+  respLabel.textContent = 'Owner Response';
+  const respInput = document.createElement('textarea');
+  respInput.id = 'menu-item-response';
+  respInput.className = 'input';
+  respInput.style.minHeight = '120px';
+  respInput.maxLength = MAX_MENU_RESPONSE_CHARS;
+  respInput.placeholder = 'e.g. Orders ship within 1-2 business days. Standard delivery takes 3-5 business days across the US.';
+  respInput.value = existingItem ? existingItem.response : '';
+
+  const respCharCount = document.createElement('div');
+  respCharCount.className = 'char-count';
+  respCharCount.id = 'menu-response-char-count';
+  respCharCount.textContent = `${respInput.value.length} / ${MAX_MENU_RESPONSE_CHARS} characters`;
+  respInput.addEventListener('input', () => {
+    respCharCount.textContent = `${respInput.value.length} / ${MAX_MENU_RESPONSE_CHARS} characters`;
+  });
+
+  respGroup.appendChild(respLabel);
+  respGroup.appendChild(respInput);
+  respGroup.appendChild(respCharCount);
+  body.appendChild(respGroup);
+
+  // Error alert
+  const errEl = document.createElement('div');
+  errEl.className = 'alert alert-danger';
+  errEl.id = 'menu-modal-error';
+  errEl.style.display = 'none';
+  errEl.setAttribute('role', 'alert');
+  body.appendChild(errEl);
+
+  // Footer
+  const footer = document.createElement('div');
+  footer.className = 'modal-footer';
+  const cancelBtn = document.createElement('button');
+  cancelBtn.className = 'btn btn-secondary';
+  cancelBtn.id = 'cancel-quick-answer-btn';
+  cancelBtn.textContent = 'Cancel';
+  const saveBtn = document.createElement('button');
+  saveBtn.className = 'btn btn-primary';
+  saveBtn.id = 'save-quick-answer-btn';
+  saveBtn.textContent = isEdit ? 'Save Changes' : 'Add Quick Answer';
+  footer.appendChild(cancelBtn);
+  footer.appendChild(saveBtn);
+
+  modal.appendChild(hdr);
+  modal.appendChild(body);
+  modal.appendChild(footer);
+  backdrop.appendChild(modal);
+  document.body.appendChild(backdrop);
+
+  setTimeout(() => labelInput.focus(), 50);
+
+  function close() { backdrop.remove(); }
+  cancelBtn.addEventListener('click', close);
+  backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
+  document.addEventListener('keydown', function escListener(e) {
+    if (e.key === 'Escape') { close(); document.removeEventListener('keydown', escListener); }
+  });
+
+  saveBtn.addEventListener('click', async () => {
+    errEl.style.display = 'none';
+    const label = labelInput.value.trim();
+    const response = respInput.value.trim();
+
+    if (!label) {
+      errEl.textContent = 'Button Label is required.';
+      errEl.style.display = 'block';
+      labelInput.focus();
+      return;
+    }
+    if (label.length > MAX_MENU_LABEL_CHARS) {
+      errEl.textContent = `Label must not exceed ${MAX_MENU_LABEL_CHARS} characters.`;
+      errEl.style.display = 'block';
+      return;
+    }
+    if (!response) {
+      errEl.textContent = 'Owner Response is required.';
+      errEl.style.display = 'block';
+      respInput.focus();
+      return;
+    }
+    if (response.length > MAX_MENU_RESPONSE_CHARS) {
+      errEl.textContent = `Response must not exceed ${MAX_MENU_RESPONSE_CHARS} characters.`;
+      errEl.style.display = 'block';
+      return;
+    }
+
+    saveBtn.classList.add('loading');
+    saveBtn.disabled = true;
+    cancelBtn.disabled = true;
+
+    let res;
+    if (isEdit) {
+      res = await updateMenuItem(bot.id, existingItem.id, { label, response });
+    } else {
+      res = await createMenuItem(bot.id, label, response);
+    }
+
+    saveBtn.classList.remove('loading');
+    saveBtn.disabled = false;
+    cancelBtn.disabled = false;
+
+    if (!res.ok) {
+      errEl.textContent = res.error;
+      errEl.style.display = 'block';
+      return;
+    }
+
+    close();
+    showToast(isEdit ? 'Quick Answer updated.' : 'Quick Answer added.', 'success');
+    if (isEdit) {
+      onSaved({ label, response });
+    } else {
+      onSaved(res.data);
+    }
+  });
+}
+
+function openDeleteMenuItemModal(bot, item, onDeleted) {
+  const backdrop = document.createElement('div');
+  backdrop.className = 'modal-backdrop';
+
+  const modal = document.createElement('div');
+  modal.className = 'modal';
+
+  const hdr = document.createElement('div');
+  hdr.className = 'modal-header';
+  const title = document.createElement('h2');
+  title.className = 'modal-title';
+  title.textContent = 'Delete Quick Answer';
+  hdr.appendChild(title);
+
+  const body = document.createElement('div');
+  body.className = 'modal-body';
+  const p = document.createElement('p');
+  p.style.fontSize = '0.9375rem';
+  p.style.color = 'var(--neutral-700)';
+  p.textContent = 'Are you sure you want to delete "';
+  const strong = document.createElement('strong');
+  strong.textContent = item.label;
+  const suffix = document.createTextNode('"? It will no longer be available in the widget.');
+  p.appendChild(strong);
+  p.appendChild(suffix);
+  body.appendChild(p);
+
+  const errEl = document.createElement('div');
+  errEl.className = 'alert alert-danger';
+  errEl.style.display = 'none';
+  errEl.setAttribute('role', 'alert');
+  body.appendChild(errEl);
+
+  const footer = document.createElement('div');
+  footer.className = 'modal-footer';
+  const cancelBtn = document.createElement('button');
+  cancelBtn.className = 'btn btn-secondary';
+  cancelBtn.textContent = 'Cancel';
+  const deleteBtn = document.createElement('button');
+  deleteBtn.className = 'btn btn-danger-solid';
+  deleteBtn.id = 'confirm-delete-quick-answer-btn';
+  deleteBtn.textContent = 'Delete';
+  footer.appendChild(cancelBtn);
+  footer.appendChild(deleteBtn);
+
+  modal.appendChild(hdr);
+  modal.appendChild(body);
+  modal.appendChild(footer);
+  backdrop.appendChild(modal);
+  document.body.appendChild(backdrop);
+
+  setTimeout(() => cancelBtn.focus(), 50);
+
+  function close() { backdrop.remove(); }
+  cancelBtn.addEventListener('click', close);
+  backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
+  document.addEventListener('keydown', function escListener(e) {
+    if (e.key === 'Escape') { close(); document.removeEventListener('keydown', escListener); }
+  });
+
+  deleteBtn.addEventListener('click', async () => {
+    errEl.style.display = 'none';
+    deleteBtn.classList.add('loading');
+    deleteBtn.disabled = true;
+    cancelBtn.disabled = true;
+
+    const res = await deleteMenuItem(bot.id, item.id);
+    deleteBtn.classList.remove('loading');
+
+    if (!res.ok) {
+      deleteBtn.disabled = false;
+      cancelBtn.disabled = false;
+      errEl.textContent = res.error;
+      errEl.style.display = 'block';
+      return;
+    }
+
+    close();
+    showToast('Quick Answer deleted.', 'default');
+    onDeleted();
+  });
+}
+
+// ==========================================================================
+// SECTION 5: Preview Chat
 // ==========================================================================
 function buildPreviewSection(bot) {
   const section = document.createElement('div');
