@@ -6,9 +6,9 @@
 import {
   getBot, updateBot, deleteBot,
   getKnowledge, uploadKnowledge, deleteKnowledge, addTextKnowledge,
-  previewChat, publishBot, unpublishBot,
+  previewChat, getBotUsage, publishBot, unpublishBot,
   getMenuItems, updateMenuSettings, createMenuItem, updateMenuItem, deleteMenuItem,
-} from '../api.js?v=6';
+} from '../api.js?v=8';
 import { showToast } from '../toast.js?v=6';
 
 // Production domain for share/embed links
@@ -104,49 +104,6 @@ export async function renderBot(container, botId, navigate, isActive) {
 
   // Delete bot
   deleteBtn.addEventListener('click', () => openDeleteBotModal(bot, navigate));
-
-  // ── Enrichment status polling ──────────────────────────────────────────────
-  // Polls every 4 seconds while any source is queued/processing.
-  // Stops automatically when all sources reach a terminal state, or the
-  // container leaves the DOM (user navigated away). Guard prevents double-start.
-  // Called at initial render AND after each enriched upload so status updates
-  // appear without a manual page refresh.
-  const POLL_INTERVAL_MS = 4000;
-  const isPending = s => s.enrichment_status === 'queued' || s.enrichment_status === 'processing';
-  let pollTimer = null;
-
-  function stopPolling() {
-    if (pollTimer !== null) {
-      clearInterval(pollTimer);
-      pollTimer = null;
-    }
-  }
-
-  async function pollEnrichmentStatus() {
-    if (!document.contains(container)) { stopPolling(); return; }
-
-    const res = await getKnowledge(botId);
-    if (!res.ok) return; // transient failure — keep polling
-
-    const updated = res.data?.sources || [];
-    knowledgeSection._refreshSources?.(updated);
-
-    if (!updated.some(isPending)) stopPolling();
-  }
-
-  function startPolling() {
-    // Already running — skip
-    if (pollTimer !== null) return;
-    pollTimer = setInterval(pollEnrichmentStatus, POLL_INTERVAL_MS);
-  }
-
-  // Start polling immediately if sources are pending on load
-  if (sources.some(isPending)) {
-    startPolling();
-  }
-
-  // Expose startPolling so upload handler can trigger it after upload
-  knowledgeSection._startPolling = startPolling;
 }
 
 // ==========================================================================
@@ -633,6 +590,40 @@ function buildKnowledgeSection(bot, initialSources, pageContainer) {
     }
   }
 
+  let isEnrichRefreshing = false;
+  let enrichCooldownUntil = 0;
+  let enrichCooldownTimer = null;
+
+  async function handleManualEnrichRefresh() {
+    if (isEnrichRefreshing || Date.now() < enrichCooldownUntil) return;
+
+    isEnrichRefreshing = true;
+    refreshSourceList();
+
+    try {
+      const res = await getKnowledge(bot.id);
+      if (res.ok && res.data?.sources) {
+        sources = res.data.sources;
+        refreshUsage();
+        refreshInputsState();
+      } else if (!res.ok) {
+        showToast(res.error || 'Failed to refresh status', 'error');
+      }
+    } catch {
+      showToast('Network error while refreshing status', 'error');
+    } finally {
+      isEnrichRefreshing = false;
+      enrichCooldownUntil = Date.now() + 10000;
+      refreshSourceList();
+
+      clearTimeout(enrichCooldownTimer);
+      enrichCooldownTimer = setTimeout(() => {
+        enrichCooldownUntil = 0;
+        refreshSourceList();
+      }, 10000);
+    }
+  }
+
   function refreshSourceList() {
     sourceListEl.innerHTML = '';
     if (sources.length === 0) {
@@ -669,19 +660,77 @@ function buildKnowledgeSection(bot, initialSources, pageContainer) {
     const metaEl = document.createElement('div');
     metaEl.className = 'source-meta';
     
-    let enrichStatusText = '';
-    if (src.enrichment_status === 'queued' || src.enrichment_status === 'processing') {
-      enrichStatusText = ' · Smart enrichment: Processing…';
+    let enrichStatusLabel = '';
+    if (src.enrichment_status === 'queued') {
+      enrichStatusLabel = 'Queued';
+    } else if (src.enrichment_status === 'processing') {
+      enrichStatusLabel = 'Processing…';
     } else if (src.enrichment_status === 'completed') {
-      enrichStatusText = ' · Smart enrichment: Complete';
+      enrichStatusLabel = 'Completed';
     } else if (src.enrichment_status === 'partial') {
-      enrichStatusText = ' · Smart enrichment: Partially complete (some chunks failed)';
+      enrichStatusLabel = 'Partially complete';
     } else if (src.enrichment_status === 'failed') {
-      enrichStatusText = ' · Smart enrichment: Failed. Your original knowledge is still available for normal search.';
+      enrichStatusLabel = 'Failed';
     }
 
     const typeLabel = isText ? 'Direct text' : 'Uploaded file';
-    metaEl.textContent = `${formatBytes(src.byte_size)} · ${src.chunk_count} chunk${src.chunk_count !== 1 ? 's' : ''} · ${typeLabel}${enrichStatusText}`;
+    const mainMeta = document.createElement('span');
+    mainMeta.textContent = `${formatBytes(src.byte_size)} · ${src.chunk_count} chunk${src.chunk_count !== 1 ? 's' : ''} · ${typeLabel}`;
+    metaEl.appendChild(mainMeta);
+
+    if (enrichStatusLabel) {
+      const enrichWrapper = document.createElement('span');
+      enrichWrapper.className = 'enrich-status-wrapper';
+      enrichWrapper.style.display = 'inline-flex';
+      enrichWrapper.style.alignItems = 'center';
+      enrichWrapper.style.marginLeft = '6px';
+
+      const enrichText = document.createElement('span');
+      enrichText.className = 'enrich-status-text';
+      enrichText.textContent = `· Smart Enrichment: ${enrichStatusLabel}`;
+      enrichWrapper.appendChild(enrichText);
+
+      const enrichRefreshBtn = document.createElement('button');
+      enrichRefreshBtn.type = 'button';
+      enrichRefreshBtn.className = 'btn btn-ghost btn-xs enrich-refresh-btn';
+      enrichRefreshBtn.setAttribute('aria-label', 'Refresh Smart Enrichment status');
+      enrichRefreshBtn.title = 'Refresh Smart Enrichment status';
+      enrichRefreshBtn.style.width = '20px';
+      enrichRefreshBtn.style.height = '20px';
+      enrichRefreshBtn.style.borderRadius = '50%';
+      enrichRefreshBtn.style.padding = '0';
+      enrichRefreshBtn.style.marginLeft = '4px';
+      enrichRefreshBtn.style.display = 'inline-flex';
+      enrichRefreshBtn.style.alignItems = 'center';
+      enrichRefreshBtn.style.justifyContent = 'center';
+      enrichRefreshBtn.style.verticalAlign = 'middle';
+      enrichRefreshBtn.style.lineHeight = '1';
+
+      if (isEnrichRefreshing) {
+        enrichRefreshBtn.disabled = true;
+        enrichRefreshBtn.innerHTML = `<span class="enrich-spinner" style="display:inline-block;animation:spin 1s linear infinite;">↻</span>`;
+      } else {
+        const remainingMs = enrichCooldownUntil - Date.now();
+        if (remainingMs > 0) {
+          enrichRefreshBtn.disabled = true;
+          enrichRefreshBtn.style.opacity = '0.5';
+          enrichRefreshBtn.style.cursor = 'not-allowed';
+          enrichRefreshBtn.textContent = '↻';
+          enrichRefreshBtn.title = `Refresh available in ${Math.ceil(remainingMs / 1000)}s`;
+        } else {
+          enrichRefreshBtn.disabled = false;
+          enrichRefreshBtn.textContent = '↻';
+        }
+      }
+
+      enrichRefreshBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        handleManualEnrichRefresh();
+      });
+
+      enrichWrapper.appendChild(enrichRefreshBtn);
+      metaEl.appendChild(enrichWrapper);
+    }
 
     info.appendChild(nameEl);
     info.appendChild(metaEl);
@@ -748,8 +797,6 @@ function buildKnowledgeSection(bot, initialSources, pageContainer) {
     refreshSourceList();
     refreshInputsState();
     showUploadStatus(`"${file.name}" uploaded successfully (${res.data.chunk_count} chunks).`, 'success');
-
-    section._startPolling?.();
   }
 
   function showUploadStatus(msg, type) {
@@ -1466,20 +1513,82 @@ function buildPreviewSection(bot) {
   inputRow.appendChild(chatInput);
   inputRow.appendChild(sendBtn);
 
-  // Usage counter
-  const usageEl = document.createElement('div');
-  usageEl.className = 'chat-usage';
-  usageEl.id = 'preview-usage';
-  usageEl.textContent = 'Preview messages today: — / 100';
+  // AI usage snapshot control (manual refresh with 10s cooldown)
+  const usageRow = document.createElement('div');
+  usageRow.className = 'chat-usage-row';
+  usageRow.id = 'preview-usage-row';
+
+  const usageLabel = document.createElement('span');
+  usageLabel.className = 'chat-usage-label';
+  usageLabel.textContent = 'AI usage';
+
+  const checkUsageBtn = document.createElement('button');
+  checkUsageBtn.type = 'button';
+  checkUsageBtn.className = 'btn btn-ghost btn-xs usage-refresh-btn';
+  checkUsageBtn.id = 'check-usage-btn';
+  checkUsageBtn.textContent = '↻ Check usage';
+
+  const usageSnapshot = document.createElement('span');
+  usageSnapshot.className = 'chat-usage-snapshot';
+  usageSnapshot.id = 'preview-usage-snapshot';
+
+  usageRow.appendChild(usageLabel);
+  usageRow.appendChild(checkUsageBtn);
+  usageRow.appendChild(usageSnapshot);
 
   chatEl.appendChild(messagesEl);
   chatEl.appendChild(inputRow);
-  chatEl.appendChild(usageEl);
+  chatEl.appendChild(usageRow);
   body.appendChild(chatEl);
   section.appendChild(body);
 
-  let previewCount = 0;
-  const previewLimit = 100;
+  let usageCooldownUntil = 0;
+  let usageCooldownTimer = null;
+
+  function updateUsageCooldown() {
+    const remainingMs = usageCooldownUntil - Date.now();
+    if (remainingMs > 0) {
+      const remainingSec = Math.ceil(remainingMs / 1000);
+      checkUsageBtn.disabled = true;
+      checkUsageBtn.textContent = `↻ Check usage (${remainingSec}s)`;
+    } else {
+      checkUsageBtn.disabled = false;
+      checkUsageBtn.textContent = '↻ Check usage';
+      if (usageCooldownTimer !== null) {
+        clearInterval(usageCooldownTimer);
+        usageCooldownTimer = null;
+      }
+    }
+  }
+
+  async function handleCheckUsage() {
+    if (checkUsageBtn.disabled || Date.now() < usageCooldownUntil) return;
+
+    checkUsageBtn.disabled = true;
+    checkUsageBtn.textContent = 'Checking…';
+
+    try {
+      const res = await getBotUsage(bot.id);
+      if (res.ok && res.data) {
+        usageSnapshot.innerHTML = `
+          <span class="usage-count">${res.data.used} / ${res.data.limit} AI responses used today</span>
+          <span class="usage-separator">•</span>
+          <span class="usage-time">Last checked just now</span>
+        `;
+      } else {
+        usageSnapshot.textContent = 'Failed to load usage snapshot.';
+      }
+    } catch {
+      usageSnapshot.textContent = 'Error loading usage.';
+    } finally {
+      usageCooldownUntil = Date.now() + 10000;
+      updateUsageCooldown();
+      if (usageCooldownTimer !== null) clearInterval(usageCooldownTimer);
+      usageCooldownTimer = setInterval(updateUsageCooldown, 1000);
+    }
+  }
+
+  checkUsageBtn.addEventListener('click', handleCheckUsage);
 
   async function sendPreviewMessage() {
     const text = chatInput.value.trim();
@@ -1510,8 +1619,6 @@ function buildPreviewSection(bot) {
     }
 
     addChatMessage(messagesEl, 'bot', res.data.answer); // AI response — textContent
-    previewCount++;
-    usageEl.textContent = `Preview messages today: ${previewCount} / ${previewLimit}`;
   }
 
   sendBtn.addEventListener('click', sendPreviewMessage);

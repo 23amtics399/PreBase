@@ -4,11 +4,11 @@
  * Routes: #login, #register, #dashboard, #bot/<id>
  */
 
-import { getMe, logout } from './api.js?v=6';
-import { renderLogin } from './views/login.js?v=6';
-import { renderDashboard } from './views/dashboard.js?v=6';
-import { renderBot } from './views/bot.js?v=6';
-import { showToast } from './toast.js?v=6';
+import { getMe, logout } from './api.js?v=8';
+import { renderLogin } from './views/login.js?v=8';
+import { renderDashboard } from './views/dashboard.js?v=8';
+import { renderBot } from './views/bot.js?v=8';
+import { showToast } from './toast.js?v=8';
 
 export { showToast };
 

@@ -185,6 +185,10 @@ export async function previewChat(botId, message) {
   return request('POST', `/api/bots/${encodeURIComponent(botId)}/chat`, { message });
 }
 
+export async function getBotUsage(botId) {
+  return request('GET', `/api/bots/${encodeURIComponent(botId)}/usage`);
+}
+
 // --------------------------------------------------------------------------
 // Quick Answers / Fallback Menu
 // --------------------------------------------------------------------------

@@ -894,13 +894,61 @@ textarea.input {
 .chat-send-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .chat-send-btn:focus-visible { outline: 2px solid var(--brand-500); outline-offset: 2px; }
 
-.chat-usage {
+.chat-usage-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex-wrap: wrap;
   font-size: 0.75rem;
-  color: var(--neutral-400);
-  text-align: center;
-  padding: 6px 12px;
+  color: var(--neutral-500);
+  padding: 8px 12px;
   background: var(--neutral-50);
   border-top: 1px solid var(--neutral-100);
+}
+
+.chat-usage-label {
+  font-weight: 500;
+  color: var(--neutral-600);
+}
+
+.usage-refresh-btn {
+  font-size: 0.75rem;
+  padding: 2px 8px;
+  height: auto;
+  border-radius: var(--radius-sm);
+  color: var(--brand-600);
+}
+
+.usage-refresh-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.chat-usage-snapshot {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.75rem;
+  color: var(--neutral-600);
+}
+
+.chat-usage-snapshot .usage-separator {
+  color: var(--neutral-300);
+}
+
+.chat-usage-snapshot .usage-time {
+  color: var(--neutral-400);
+  font-style: italic;
+}
+
+.enrich-refresh-btn {
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.enrich-refresh-btn:hover:not(:disabled) {
+  background: var(--neutral-200);
+  color: var(--neutral-800);
 }
 
 /* --------------------------------------------------------------------------

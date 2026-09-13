@@ -650,4 +650,32 @@ bots.post('/:id/chat', async (c) => {
   return c.json({ answer: ragResult.answer });
 });
 
+// ---------------------------------------------------------------------------
+// GET /:id/usage
+// Authoritative preview usage snapshot (owner only, reads preview_usage)
+// ---------------------------------------------------------------------------
+bots.get('/:id/usage', async (c) => {
+  const botId = c.req.param('id');
+  if (!validateBotId(botId)) return c.json({ error: 'invalid_bot_id', message: 'Invalid bot ID' }, 400);
+
+  const ownerId = c.get('userId');
+
+  // Verify ownership
+  const bot = await c.env.DB.prepare(
+    'SELECT id FROM bots WHERE id = ? AND owner_id = ?'
+  ).bind(botId, ownerId).first();
+
+  if (!bot) return c.json({ error: 'not_found', message: 'Bot not found.' }, 404);
+
+  const today = new Date().toISOString().slice(0, 10);
+  const row = await c.env.DB.prepare(
+    'SELECT msg_count FROM preview_usage WHERE user_id = ? AND day = ?'
+  ).bind(ownerId, today).first<{ msg_count: number }>();
+
+  const used = row?.msg_count ?? 0;
+  const limit = Math.max(1, parseInt(c.env.PREBASE_PREVIEW_LIMIT ?? '100', 10));
+
+  return c.json({ used, limit, day: today });
+});
+
 export default bots;

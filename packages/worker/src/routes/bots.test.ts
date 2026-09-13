@@ -497,4 +497,52 @@ describe('Bots API', () => {
       expect(data.error).toBe('rate_limited');
     });
   });
+
+  describe('GET /api/bots/:id/usage', () => {
+    it('rejects invalid bot ID', async () => {
+      const env = buildEnv();
+      const res = await get(env, '/api/bots/invalid-bot-id/usage');
+      expect(res.status).toBe(400);
+      const data = await res.json() as any;
+      expect(data.error).toBe('invalid_bot_id');
+    });
+
+    it('returns 404 when bot is not found or not owned by user', async () => {
+      const env = buildEnv();
+      env.mockStmt.first.mockResolvedValueOnce(null);
+      const res = await get(env, '/api/bots/00000000-0000-4000-8000-000000000001/usage');
+      expect(res.status).toBe(404);
+      const data = await res.json() as any;
+      expect(data.error).toBe('not_found');
+    });
+
+    it('returns 0 used when no preview usage row exists for today', async () => {
+      const env = buildEnv();
+      // 1st query: bot ownership check
+      env.mockStmt.first.mockResolvedValueOnce({ id: '00000000-0000-4000-8000-000000000001' });
+      // 2nd query: preview_usage lookup
+      env.mockStmt.first.mockResolvedValueOnce(null);
+
+      const res = await get(env, '/api/bots/00000000-0000-4000-8000-000000000001/usage');
+      expect(res.status).toBe(200);
+      const data = await res.json() as any;
+      expect(data.used).toBe(0);
+      expect(data.limit).toBe(100);
+      expect(typeof data.day).toBe('string');
+    });
+
+    it('returns authoritative used count when preview usage exists', async () => {
+      const env = buildEnv();
+      // 1st query: bot ownership check
+      env.mockStmt.first.mockResolvedValueOnce({ id: '00000000-0000-4000-8000-000000000001' });
+      // 2nd query: preview_usage lookup
+      env.mockStmt.first.mockResolvedValueOnce({ msg_count: 37 });
+
+      const res = await get(env, '/api/bots/00000000-0000-4000-8000-000000000001/usage');
+      expect(res.status).toBe(200);
+      const data = await res.json() as any;
+      expect(data.used).toBe(37);
+      expect(data.limit).toBe(100);
+    });
+  });
 });
